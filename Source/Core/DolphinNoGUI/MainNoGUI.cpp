@@ -4,8 +4,12 @@
 #include "DolphinNoGUI/Platform.h"
 
 #include <OptionParser.h>
+#include <atomic>
+#include <charconv>
 #include <csignal>
 #include <cstdio>
+#include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,7 +24,9 @@
 #include "Core/BootManager.h"
 #include "Core/Core.h"
 #include "Core/DolphinAnalytics.h"
+#include "Core/FifoPlayer/FifoRecorder.h"
 #include "Core/Host.h"
+#include "Core/Movie.h"
 #include "Core/System.h"
 
 #include "UICommon/CommandLineParse.h"
@@ -28,8 +34,35 @@
 #include "UICommon/DiscordPresence.h"
 #endif
 #include "UICommon/UICommon.h"
+#include "VideoCommon/VideoEvents.h"
 
 static std::unique_ptr<Platform> s_platform;
+
+struct AutoFifoCapture
+{
+  std::string path;
+  u64 start_presented_frame = 0;
+  s32 frame_count = 0;
+  std::string screenshot_name;
+  bool stop_after_capture = false;
+};
+
+template <typename T>
+static bool ParseUnsignedOption(const optparse::Values& options, const char* name, T* out)
+{
+  if (!options.is_set(name))
+    return true;
+  const std::string text = static_cast<const char*>(options.get(name));
+  T parsed{};
+  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+  if (error != std::errc{} || end != text.data() + text.size())
+  {
+    fprintf(stderr, "Invalid --%s value: %s\n", name, text.c_str());
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
 
 static void signal_handler(int)
 {
@@ -223,9 +256,55 @@ int main(const int argc, char* argv[])
                 "macos"
 #endif
       });
+  parser->add_option("--fifo-record-path")
+      .action("store")
+      .help("Save an automated headless FIFO recording to this .dff path");
+  parser->add_option("--fifo-record-start")
+      .action("store")
+      .help("Presented frames to skip before automated FIFO recording (default 0)");
+  parser->add_option("--fifo-record-frames")
+      .action("store")
+      .help("Number of FIFO frames to record");
+  parser->add_option("--fifo-record-stop")
+      .action("store_true")
+      .help("Stop emulation after the automated FIFO recording is saved");
+  parser->add_option("--fifo-record-screenshot-name")
+      .action("store")
+      .help("Save a PNG after the automated FIFO window under ScreenShots/<game-id>");
 
   optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   std::vector<std::string> args = parser->args();
+
+  std::optional<AutoFifoCapture> auto_fifo;
+  const bool any_fifo_option =
+      options.is_set("fifo_record_path") || options.is_set("fifo_record_start") ||
+      options.is_set("fifo_record_frames") || options.is_set("fifo_record_stop") ||
+      options.is_set("fifo_record_screenshot_name");
+  if (any_fifo_option)
+  {
+    if (!options.is_set("fifo_record_path") || !options.is_set("fifo_record_frames"))
+    {
+      fprintf(stderr, "--fifo-record-path and --fifo-record-frames are required together\n");
+      return 1;
+    }
+    AutoFifoCapture capture;
+    capture.path = static_cast<const char*>(options.get("fifo_record_path"));
+    u32 frame_count = 0;
+    if (capture.path.empty() ||
+        !ParseUnsignedOption(options, "fifo_record_start", &capture.start_presented_frame) ||
+        !ParseUnsignedOption(options, "fifo_record_frames", &frame_count) || frame_count == 0 ||
+        frame_count > static_cast<u32>(std::numeric_limits<s32>::max()))
+    {
+      fprintf(stderr, "Invalid automated FIFO capture configuration\n");
+      return 1;
+    }
+    capture.frame_count = static_cast<s32>(frame_count);
+    if (options.is_set("fifo_record_screenshot_name"))
+      capture.screenshot_name =
+          static_cast<const char*>(options.get("fifo_record_screenshot_name"));
+    capture.stop_after_capture = options.is_set("fifo_record_stop");
+    auto_fifo = std::move(capture);
+  }
 
   std::optional<std::string> save_state_path;
   if (options.is_set("save_state"))
@@ -297,6 +376,23 @@ int main(const int argc, char* argv[])
     return 1;
   }
 
+  if (options.is_set("movie"))
+  {
+    std::optional<std::string> movie_save_state_path;
+    const std::string movie_path = static_cast<const char*>(options.get("movie"));
+    if (Core::System::GetInstance().GetMovie().PlayInput(movie_path, &movie_save_state_path))
+    {
+      if (movie_save_state_path)
+        boot->boot_session_data.SetSavestateData(std::move(movie_save_state_path),
+                                                 DeleteSavestateAfterBoot::No);
+    }
+    else
+    {
+      fprintf(stderr, "Could not play movie file: %s\n", movie_path.c_str());
+      return 1;
+    }
+  }
+
   auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
     if (state == Core::State::Uninitialized)
       s_platform->Stop();
@@ -330,6 +426,55 @@ int main(const int argc, char* argv[])
   {
     fprintf(stderr, "Could not boot the specified file\n");
     return 1;
+  }
+
+  Common::EventHook auto_fifo_hook;
+  u64 presented_frames = 0;
+  std::atomic<u32> auto_fifo_stop_delay = 0;
+  if (auto_fifo)
+  {
+    const AutoFifoCapture capture = *auto_fifo;
+    fprintf(stderr,
+            "[auto-fifo] armed path=%s start_presented=%llu frames=%d screenshot=%s stop=%d\n",
+            capture.path.c_str(), static_cast<unsigned long long>(capture.start_presented_frame),
+            capture.frame_count,
+            capture.screenshot_name.empty() ? "<none>" : capture.screenshot_name.c_str(),
+            capture.stop_after_capture ? 1 : 0);
+    auto_fifo_hook = Core::System::GetInstance().GetVideoEvents().after_frame_event.Register(
+        [capture, &presented_frames, &auto_fifo_stop_delay](const Core::System& system) {
+          const u32 stop_delay = auto_fifo_stop_delay.load();
+          if (stop_delay != 0 && auto_fifo_stop_delay.fetch_sub(1) == 1)
+          {
+            Core::QueueHostJob([](Core::System& queued_system) { Core::Stop(queued_system); });
+            return;
+          }
+          const u64 current = presented_frames++;
+          if (current != capture.start_presented_frame)
+            return;
+          fprintf(stderr, "[auto-fifo] start presented=%llu frames=%d\n",
+                  static_cast<unsigned long long>(current), capture.frame_count);
+          system.GetFifoRecorder().StartRecording(capture.frame_count, [capture,
+                                                                        &auto_fifo_stop_delay] {
+            FifoDataFile* file = Core::System::GetInstance().GetFifoRecorder().GetRecordedFile();
+            const bool saved = file != nullptr && file->Save(capture.path);
+            fprintf(stderr, "[auto-fifo] complete saved=%d path=%s frames=%u\n", saved ? 1 : 0,
+                    capture.path.c_str(), file != nullptr ? file->GetFrameCount() : 0u);
+            Core::QueueHostJob([capture, &auto_fifo_stop_delay](Core::System&) {
+              if (!capture.screenshot_name.empty())
+              {
+                Core::SaveScreenShot(capture.screenshot_name);
+                fprintf(stderr, "[auto-fifo] screenshot requested name=%s\n",
+                        capture.screenshot_name.c_str());
+              }
+              if (capture.stop_after_capture)
+              {
+                // Give FrameDumper at least one complete present after the
+                // request before stopping the renderer.
+                auto_fifo_stop_delay.store(capture.screenshot_name.empty() ? 1u : 2u);
+              }
+            });
+          });
+        });
   }
 
 #ifdef USE_DISCORD_PRESENCE
