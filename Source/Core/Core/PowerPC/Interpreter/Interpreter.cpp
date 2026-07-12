@@ -351,7 +351,11 @@ void EmitParityRegisterCheckpoint(Core::System& system, PowerPC::PowerPCState& s
                state.fpscr.Hex);
   for (u32 index = 0; index < 8; ++index)
     std::fprintf(s_parity_event_file, "%s%u", index ? "," : "", state.spr[SPR_GQR0 + index]);
-  std::fputs("]}}\n", s_parity_event_file);
+  std::fprintf(s_parity_event_file,
+               "],\"spr\":{\"pvr\":%u,\"hid0\":%u,\"hid1\":%u,"
+               "\"hid2\":%u,\"hid4\":%u,\"l2cr\":%u}}}\n",
+               state.spr[SPR_PVR], state.spr[SPR_HID0], state.spr[SPR_HID1],
+               state.spr[SPR_HID2], state.spr[SPR_HID4], state.spr[SPR_L2CR]);
   std::fflush(s_parity_event_file);
 }
 
