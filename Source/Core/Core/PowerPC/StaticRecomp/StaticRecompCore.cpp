@@ -325,6 +325,15 @@ void StaticRecompCore::LoadModule()
   // lockstep stays disabled even if requested (warned in InitLockstep).
   m_set_mem_journal = reinterpret_cast<SetMemJournalFn>(
       m_library.GetSymbolAddress("ppc_set_mem_write_journal"));
+
+  // Native recompiled code has no instruction-cache model: generated icbi
+  // instructions are no-ops. Keep interpreter fallback coherent with that
+  // model, otherwise a REL reloaded at a reused address can execute stale
+  // bytes left in Dolphin's interpreter instruction cache.
+  m_system.GetPPCState().iCache.m_disable_icache = true;
+  // Keep the config layer in sync so a later RefreshConfig() cannot silently
+  // re-enable the interpreter cache while the native module remains active.
+  Config::SetCurrent(Config::MAIN_DISABLE_ICACHE, true);
   std::fprintf(stderr,
                "[staticrecomp] module loaded: %s entry=0x%08X (chassis built " __DATE__
                " " __TIME__ ")\n",
@@ -734,7 +743,13 @@ void StaticRecompCore::HookInstructionFallback(CPUState* cpu, u32 raw, u32 cia)
       const u32 ra = (raw >> 16) & 31u;
       const u32 rb = (raw >> 11) & 31u;
       const u32 ea = (ra ? cpu->gpr[ra] : 0u) + cpu->gpr[rb];
-      system.GetJitInterface().InvalidateICacheLine(ea);
+      // Match Interpreter::icbi: invalidate both the interpreter cache and
+      // JIT/cache observers. The other data-cache operations only need the
+      // existing JIT invalidation when dcache emulation is disabled.
+      if (xo == 982u)
+        ppc.iCache.Invalidate(system.GetMemory(), system.GetJitInterface(), ea);
+      else
+        system.GetJitInterface().InvalidateICacheLine(ea);
       // These bypass SingleStepInner, so charge Dolphin's PPCTables cost
       // here (icbi 4, dcbf/dcbst/dcbi 5); their emitted block cost is zero.
       ppc.downcount -= (xo == 982u) ? 4 : 5;
