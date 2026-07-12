@@ -193,7 +193,6 @@ void EmitParityEvent(Core::System& system, PowerPC::PowerPCState& state, PowerPC
                      u64 a, u64 b, u64 c, u64 d)
 {
   (void)state;
-  (void)mmu;
   static const bool capture_boot_events = [] {
     const char* raw = std::getenv("DOLPHIN_PARITY_CAPTURE_BOOT_EVENTS");
     return raw && raw[0] && raw[0] != '0';
@@ -225,15 +224,18 @@ void EmitParityEvent(Core::System& system, PowerPC::PowerPCState& state, PowerPC
       return;
   }
   const u64 sequence = s_parity_event_sequence.fetch_add(1);
+  const u32 guest_thread = mmu.Read<u32>(0x800000E4u);
   std::fprintf(s_parity_event_file,
                "{\"record\":\"event\",\"sequence\":%llu,\"family\":\"%s\","
                "\"action\":\"%s\",\"subject\":%u,\"anchor\":{"
                "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":null},"
-               "\"data\":{\"a\":%llu,\"b\":%llu,\"c\":%llu,\"d\":%llu}}\n",
+               "\"data\":{\"a\":%llu,\"b\":%llu,\"c\":%llu,\"d\":%llu,"
+               "\"thread\":%u}}\n",
                static_cast<unsigned long long>(sequence), family, action, subject,
                static_cast<unsigned long long>(timebase),
                static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
-               static_cast<unsigned long long>(c), static_cast<unsigned long long>(d));
+               static_cast<unsigned long long>(c), static_cast<unsigned long long>(d),
+               guest_thread);
   if ((sequence & 0x3ffu) == 0)
     std::fflush(s_parity_event_file);
 }
