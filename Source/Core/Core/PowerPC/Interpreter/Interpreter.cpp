@@ -77,22 +77,54 @@ struct ParityLockstepConfig
 
 struct ParityRegisterConfig
 {
-  bool enabled = false;
-  u32 pc = 0;
-  std::string function_name;
+  struct Target
+  {
+    u32 pc = 0;
+    std::string function_name;
+  };
+
+  std::vector<Target> targets;
 };
+
+void AddParityRegisterTarget(ParityRegisterConfig* config, const char* raw_pc,
+                             const std::string& function_name)
+{
+  if (!raw_pc || !raw_pc[0] || function_name.empty())
+    return;
+  const u32 pc = static_cast<u32>(std::strtoul(raw_pc, nullptr, 0));
+  if (pc != 0)
+    config->targets.push_back({pc, function_name});
+}
 
 const ParityRegisterConfig& SelectedParityRegisterConfig()
 {
   static const ParityRegisterConfig config = [] {
     ParityRegisterConfig value;
+    const char* raw_targets = std::getenv("DOLPHIN_PARITY_REGISTER_TARGETS");
+    if (raw_targets && raw_targets[0])
+    {
+      std::string targets(raw_targets);
+      size_t pos = 0;
+      while (pos < targets.size())
+      {
+        const size_t comma = targets.find(',', pos);
+        const std::string token = targets.substr(
+            pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        const size_t separator = token.find('=');
+        if (separator != std::string::npos)
+        {
+          const std::string raw_pc = token.substr(0, separator);
+          AddParityRegisterTarget(&value, raw_pc.c_str(), token.substr(separator + 1));
+        }
+        if (comma == std::string::npos)
+          break;
+        pos = comma + 1;
+      }
+      return value;
+    }
     const char* raw_pc = std::getenv("DOLPHIN_PARITY_REGISTER_PC");
     const char* raw_name = std::getenv("DOLPHIN_PARITY_REGISTER_FUNC");
-    if (!raw_pc || !raw_pc[0] || !raw_name || !raw_name[0])
-      return value;
-    value.pc = static_cast<u32>(std::strtoul(raw_pc, nullptr, 0));
-    value.function_name = raw_name;
-    value.enabled = value.pc != 0;
+    AddParityRegisterTarget(&value, raw_pc, raw_name ? raw_name : "");
     return value;
   }();
   return config;
@@ -431,15 +463,20 @@ void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState&
                     snapshot.half_lines_per_frame, snapshot.ticks_per_half_line,
                     snapshot.ticks_until_interrupt, snapshot.ticks_per_field);
   }
-  const ParityRegisterConfig& selected_register = SelectedParityRegisterConfig();
-  if (ParityCaptureLevel() >= 3 && selected_register.enabled &&
-      pc == selected_register.pc)
+  const ParityRegisterConfig& selected_registers = SelectedParityRegisterConfig();
+  if (ParityCaptureLevel() >= 3)
   {
-    const u32 function_id = ParityFunctionId(selected_register.function_name.c_str());
-    EmitParityEvent(system, state, mmu, "function", "enter", function_id,
-                    state.gpr[3], state.gpr[4], state.gpr[5], state.spr[SPR_LR]);
-    EmitParityRegisterCheckpoint(system, state, mmu,
-                                 selected_register.function_name.c_str());
+    for (const auto& selected_register : selected_registers.targets)
+    {
+      if (pc != selected_register.pc)
+        continue;
+      const u32 function_id = ParityFunctionId(selected_register.function_name.c_str());
+      EmitParityEvent(system, state, mmu, "function", "enter", function_id,
+                      state.gpr[3], state.gpr[4], state.gpr[5], state.spr[SPR_LR]);
+      EmitParityRegisterCheckpoint(system, state, mmu,
+                                   selected_register.function_name.c_str());
+      break;
+    }
   }
   bool have_current_thread = false;
   u32 cached_current_thread = 0;
