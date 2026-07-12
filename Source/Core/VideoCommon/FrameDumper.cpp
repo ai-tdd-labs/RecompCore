@@ -3,6 +3,10 @@
 
 #include "VideoCommon/FrameDumper.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
 #include "Common/Assert.h"
 #include "Common/FileUtil.h"
 #include "Common/Image.h"
@@ -15,10 +19,72 @@
 #include "VideoCommon/AbstractStagingTexture.h"
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/OnScreenDisplay.h"
+#include "VideoCommon/OpcodeDecoding.h"
 #include "VideoCommon/Present.h"
 
 // The video encoder needs the image to be a multiple of x samples.
 static constexpr int VIDEO_ENCODER_LCM = 4;
+
+namespace
+{
+FILE* s_parity_pixel_file = nullptr;
+u32 s_parity_pixel_frame = 0;
+
+bool IsParityPixelCaptureActive()
+{
+  const char* path = std::getenv("DOLPHIN_PARITY_PIXEL_FILE");
+  return path && path[0] && OpcodeDecoder::g_record_fifo_data;
+}
+
+void CloseParityPixelFile()
+{
+  if (!s_parity_pixel_file)
+    return;
+  std::fflush(s_parity_pixel_file);
+  std::fclose(s_parity_pixel_file);
+  s_parity_pixel_file = nullptr;
+}
+
+void EmitParityPixelDigest(const u8* data, int width, int height, int stride)
+{
+  if (!IsParityPixelCaptureActive() || !data || width <= 0 || height <= 0 || stride < width * 4)
+    return;
+  if (!s_parity_pixel_file)
+  {
+    s_parity_pixel_file = std::fopen(std::getenv("DOLPHIN_PARITY_PIXEL_FILE"), "w");
+    if (!s_parity_pixel_file)
+      return;
+    std::atexit(CloseParityPixelFile);
+  }
+  constexpr u64 fnv_basis = 1469598103934665603ull;
+  constexpr u64 fnv_prime = 1099511628211ull;
+  u64 hash = fnv_basis;
+  for (int y = 0; y < height; ++y)
+  {
+    const u8* row = data + static_cast<size_t>(y) * stride;
+    for (int x = 0; x < width * 4; ++x)
+      hash = (hash ^ row[x]) * fnv_prime;
+  }
+  ++s_parity_pixel_frame;
+  std::fprintf(s_parity_pixel_file, "frame %u pixels %dx%d fnv %016llx\n",
+               s_parity_pixel_frame, width, height,
+               static_cast<unsigned long long>(hash));
+  std::fflush(s_parity_pixel_file);
+
+  const char* png_dir = std::getenv("DOLPHIN_PARITY_PIXEL_PNG_DIR");
+  const char* png_limit_text = std::getenv("DOLPHIN_PARITY_PIXEL_PNG_LIMIT");
+  const unsigned long png_limit = png_limit_text ? std::strtoul(png_limit_text, nullptr, 0) : 0;
+  if (png_dir && png_dir[0] && s_parity_pixel_frame <= png_limit)
+  {
+    File::CreateFullPath(std::string(png_dir) + "/");
+    char png_path[1024];
+    std::snprintf(png_path, sizeof(png_path), "%s/frame_%06u.png", png_dir,
+                  s_parity_pixel_frame);
+    Common::ConvertRGBAToRGBAndSavePNG(png_path, data, width, height, stride,
+                                      Config::Get(Config::GFX_PNG_COMPRESSION_LEVEL));
+  }
+}
+}  // namespace
 
 static bool DumpFrameToPNG(const FrameData& frame, const std::string& file_name)
 {
@@ -47,6 +113,15 @@ void FrameDumper::DumpCurrentFrame(const AbstractTexture* src_texture,
   int source_height = src_rect.GetHeight();
   int target_width = target_rect.GetWidth();
   int target_height = target_rect.GetHeight();
+
+  // Parity capture compares the emulated video source, not the host window.
+  // Keeping the source dimensions avoids a platform/backend-dependent stretch
+  // (for example 640x480 to 640x511 on macOS) from changing every pixel hash.
+  if (IsParityPixelCaptureActive())
+  {
+    target_width = source_width;
+    target_height = source_height;
+  }
 
   // We only need to render a copy if we need to stretch/scale the XFB copy.
   MathUtil::Rectangle<int> copy_rect = src_rect;
@@ -170,6 +245,7 @@ void FrameDumper::ShutdownFrameDumping()
 
 void FrameDumper::DumpFrameData(const u8* data, int w, int h, int stride)
 {
+  EmitParityPixelDigest(data, w, h, stride);
   m_frame_dump_data = FrameData{data, w, h, stride, m_last_frame_state};
 
   if (!m_frame_dump_thread_running.IsSet())
@@ -347,6 +423,8 @@ void FrameDumper::SaveScreenshot(std::string filename)
 
 bool FrameDumper::IsFrameDumping() const
 {
+  if (IsParityPixelCaptureActive())
+    return true;
   if (m_screenshot_request.IsSet())
     return true;
 

@@ -22,6 +22,8 @@ class System;
 
 namespace MMIO
 {
+void DolphinParityTraceMMIO(Core::System& system, bool write, u32 addr,
+                            u32 size, u64 value);
 // There are three main MMIO blocks on the Wii (only one on the GameCube):
 //  - 0x0C00xxxx: GameCube MMIOs (CP, PE, VI, PI, MI, DSP, DVD, SI, EI, AI, GP)
 //  - 0x0D00xxxx: Wii MMIOs and GC mirrors (IPC, DVD, SI, EI, AI)
@@ -136,12 +138,15 @@ public:
   template <typename Unit>
   Unit Read(Core::System& system, u32 addr)
   {
-    return GetHandlerForRead<Unit>(addr).Read(system, addr);
+    const Unit value = GetHandlerForRead<Unit>(addr).Read(system, addr);
+    DolphinParityTraceMMIO(system, false, addr, sizeof(Unit), value);
+    return value;
   }
 
   template <typename Unit>
   void Write(Core::System& system, u32 addr, Unit val)
   {
+    DolphinParityTraceMMIO(system, true, addr, sizeof(Unit), val);
     GetHandlerForWrite<Unit>(addr).Write(system, addr, val);
   }
 

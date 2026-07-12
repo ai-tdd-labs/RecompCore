@@ -7,6 +7,7 @@
 #include <atomic>
 #include <charconv>
 #include <csignal>
+#include <cstdlib>
 #include <cstdio>
 #include <limits>
 #include <optional>
@@ -27,6 +28,7 @@
 #include "Core/FifoPlayer/FifoRecorder.h"
 #include "Core/Host.h"
 #include "Core/Movie.h"
+#include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 
 #include "UICommon/CommandLineParse.h"
@@ -431,6 +433,8 @@ int main(const int argc, char* argv[])
   Common::EventHook auto_fifo_hook;
   u64 presented_frames = 0;
   std::atomic<u32> auto_fifo_stop_delay = 0;
+  std::atomic<bool> auto_fifo_started = false;
+  std::atomic<bool> auto_fifo_start_queued = false;
   if (auto_fifo)
   {
     const AutoFifoCapture capture = *auto_fifo;
@@ -440,8 +444,55 @@ int main(const int argc, char* argv[])
             capture.frame_count,
             capture.screenshot_name.empty() ? "<none>" : capture.screenshot_name.c_str(),
             capture.stop_after_capture ? 1 : 0);
+
+    const auto start_auto_fifo = [&auto_fifo_started,
+                                  &auto_fifo_stop_delay](const AutoFifoCapture& pending) {
+      if (auto_fifo_started.exchange(true))
+        return;
+      const char* parity_fast_forward = std::getenv("DOLPHIN_PARITY_FAST_FORWARD");
+      const bool switch_to_interpreter =
+          parity_fast_forward && parity_fast_forward[0] && parity_fast_forward[0] != '0';
+      if (switch_to_interpreter)
+      {
+        Core::System& system = Core::System::GetInstance();
+        Core::CPUThreadGuard guard(system);
+        system.GetPowerPC().SetMode(PowerPC::CoreMode::Interpreter);
+        fprintf(stderr, "[parity-oracle] fast-forward complete; interpreter window active\n");
+      }
+      fprintf(stderr, "[auto-fifo] start skipped_presented=%llu frames=%d mode=immediate\n",
+              static_cast<unsigned long long>(pending.start_presented_frame),
+              pending.frame_count);
+      Core::System::GetInstance().GetFifoRecorder().StartRecording(
+          pending.frame_count,
+          [pending, &auto_fifo_stop_delay] {
+            FifoDataFile* file = Core::System::GetInstance().GetFifoRecorder().GetRecordedFile();
+            const bool saved = file != nullptr && file->Save(pending.path);
+            fprintf(stderr, "[auto-fifo] complete saved=%d path=%s frames=%u\n", saved ? 1 : 0,
+                    pending.path.c_str(), file != nullptr ? file->GetFrameCount() : 0u);
+            Core::QueueHostJob([pending, &auto_fifo_stop_delay](Core::System&) {
+              if (!pending.screenshot_name.empty())
+              {
+                Core::SaveScreenShot(pending.screenshot_name);
+                fprintf(stderr, "[auto-fifo] screenshot requested name=%s\n",
+                        pending.screenshot_name.c_str());
+              }
+              if (pending.stop_after_capture)
+              {
+                // Give FrameDumper at least one complete present after the
+                // request before stopping the renderer.
+                auto_fifo_stop_delay.store(pending.screenshot_name.empty() ? 1u : 2u);
+              }
+            });
+          },
+          true);
+    };
+
+    if (capture.start_presented_frame == 0)
+      start_auto_fifo(capture);
+
     auto_fifo_hook = Core::System::GetInstance().GetVideoEvents().after_frame_event.Register(
-        [capture, &presented_frames, &auto_fifo_stop_delay](const Core::System& system) {
+        [capture, start_auto_fifo, &presented_frames, &auto_fifo_stop_delay,
+         &auto_fifo_start_queued](const Core::System&) {
           const u32 stop_delay = auto_fifo_stop_delay.load();
           if (stop_delay != 0 && auto_fifo_stop_delay.fetch_sub(1) == 1)
           {
@@ -449,31 +500,19 @@ int main(const int argc, char* argv[])
             return;
           }
           const u64 current = presented_frames++;
-          if (current != capture.start_presented_frame)
+          if (capture.start_presented_frame == 0 ||
+              current + 1 != capture.start_presented_frame)
             return;
-          fprintf(stderr, "[auto-fifo] start presented=%llu frames=%d\n",
-                  static_cast<unsigned long long>(current), capture.frame_count);
-          system.GetFifoRecorder().StartRecording(capture.frame_count, [capture,
-                                                                        &auto_fifo_stop_delay] {
-            FifoDataFile* file = Core::System::GetInstance().GetFifoRecorder().GetRecordedFile();
-            const bool saved = file != nullptr && file->Save(capture.path);
-            fprintf(stderr, "[auto-fifo] complete saved=%d path=%s frames=%u\n", saved ? 1 : 0,
-                    capture.path.c_str(), file != nullptr ? file->GetFrameCount() : 0u);
-            Core::QueueHostJob([capture, &auto_fifo_stop_delay](Core::System&) {
-              if (!capture.screenshot_name.empty())
-              {
-                Core::SaveScreenShot(capture.screenshot_name);
-                fprintf(stderr, "[auto-fifo] screenshot requested name=%s\n",
-                        capture.screenshot_name.c_str());
-              }
-              if (capture.stop_after_capture)
-              {
-                // Give FrameDumper at least one complete present after the
-                // request before stopping the renderer.
-                auto_fifo_stop_delay.store(capture.screenshot_name.empty() ? 1u : 2u);
-              }
+          // Registering FifoRecorder's own after-frame hook from inside this
+          // event dispatch leaves the new hook inactive on macOS. Queue the
+          // recorder start onto the host job boundary so its callback is
+          // installed before the next presentation dispatch.
+          if (!auto_fifo_start_queued.exchange(true))
+          {
+            Core::QueueHostJob([capture, start_auto_fifo](Core::System&) {
+              start_auto_fifo(capture);
             });
-          });
+          }
         });
   }
 

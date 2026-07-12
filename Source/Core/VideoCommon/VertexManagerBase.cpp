@@ -5,12 +5,15 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <memory>
+#include <string>
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Contains.h"
 #include "Common/EnumMap.h"
+#include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
 #include "Common/MathUtil.h"
 #include "Common/SmallVector.h"
@@ -45,6 +48,60 @@
 #include "VideoCommon/XFStateManager.h"
 
 std::unique_ptr<VertexManagerBase> g_vertex_manager;
+
+namespace
+{
+struct ParityEFBDrawDumpConfig
+{
+  u64 start = 0;
+  u64 end = 0;
+  std::string directory;
+};
+
+const ParityEFBDrawDumpConfig& GetParityEFBDrawDumpConfig()
+{
+  static const ParityEFBDrawDumpConfig config = [] {
+    ParityEFBDrawDumpConfig value;
+    const char* start = std::getenv("DOLPHIN_PARITY_DUMP_EFB_DRAW_START");
+    const char* end = std::getenv("DOLPHIN_PARITY_DUMP_EFB_DRAW_END");
+    const char* directory = std::getenv("DOLPHIN_PARITY_DUMP_EFB_DRAW_DIR");
+    if (!start || !start[0] || !directory || !directory[0])
+      return value;
+
+    value.start = std::strtoull(start, nullptr, 0);
+    value.end = end && end[0] ? std::strtoull(end, nullptr, 0) : value.start;
+    value.directory = directory;
+    if (value.start != 0 && value.end >= value.start)
+      File::CreateFullPath(value.directory + "/");
+    return value;
+  }();
+  return config;
+}
+
+void DumpParityEFBAfterDraw()
+{
+  static u64 draw = 0;
+  ++draw;
+
+  const ParityEFBDrawDumpConfig& config = GetParityEFBDrawDumpConfig();
+  if (config.start == 0 || draw < config.start || draw > config.end || !g_framebuffer_manager)
+    return;
+
+  AbstractTexture* const efb = g_framebuffer_manager->GetEFBColorTexture();
+  if (!efb)
+    return;
+  AbstractTexture* const resolved = g_framebuffer_manager->ResolveEFBColorTexture(efb->GetRect());
+  if (!resolved)
+    return;
+
+  const TextureConfig& texture_config = resolved->GetConfig();
+  const std::string path = config.directory + "/efb_after_draw_" + std::to_string(draw) + "_" +
+                           std::to_string(texture_config.width) + "x" +
+                           std::to_string(texture_config.height) + ".png";
+  if (!resolved->Save(path, 0, 1))
+    ERROR_LOG_FMT(VIDEO, "Parity oracle failed to dump EFB after draw {} to {}", draw, path);
+}
+}  // namespace
 
 using OpcodeDecoder::Primitive;
 
@@ -665,6 +722,11 @@ void VertexManagerBase::Flush()
 
     // Even if we skip the draw, emulated state should still be impacted
     OnDraw();
+
+    // Optional oracle zoom: capture the raw EFB exactly at a selected draw
+    // boundary. Disabled unless all DOLPHIN_PARITY_DUMP_EFB_DRAW_* variables
+    // are supplied, so normal Dolphin rendering has no readback cost.
+    DumpParityEFBAfterDraw();
 
     // The EFB cache is now potentially stale.
     g_framebuffer_manager->FlagPeekCacheAsOutOfDate();

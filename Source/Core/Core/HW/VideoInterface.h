@@ -350,6 +350,19 @@ union UVIHorizontalStepping
   };
 };
 
+// Canonical hardware timing needed when a direct-DOL runtime starts after the
+// VI has already been scanning since console power-on. Values are Broadway
+// core cycles so an oracle adapter can convert them to the 40.5-MHz timebase
+// without losing sub-half-line precision.
+struct ParityTimingSnapshot
+{
+  u32 half_line = 0;
+  u32 half_lines_per_frame = 0;
+  u32 ticks_per_half_line = 0;
+  u64 ticks_until_interrupt = 0;
+  u32 ticks_per_field = 0;
+};
+
 class VideoInterfaceManager
 {
 public:
@@ -388,6 +401,7 @@ public:
   u32 GetTicksPerSample() const;
   u32 GetTicksPerHalfLine() const;
   u32 GetTicksPerField() const;
+  ParityTimingSnapshot GetParityTimingSnapshot(u64 current_ticks) const;
 
   // Not adjusted by VBI Clock Override.
   u32 GetNominalTicksPerHalfLine() const;

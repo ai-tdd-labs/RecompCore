@@ -212,7 +212,8 @@ FifoRecorder::FifoRecorder(Core::System& system) : m_system(system)
 
 FifoRecorder::~FifoRecorder() = default;
 
-void FifoRecorder::StartRecording(s32 numFrames, CallbackFunc finishedCb)
+void FifoRecorder::StartRecording(s32 numFrames, CallbackFunc finishedCb,
+                                  bool record_current_frame)
 {
   std::lock_guard lk(m_mutex);
 
@@ -242,12 +243,18 @@ void FifoRecorder::StartRecording(s32 numFrames, CallbackFunc finishedCb)
   if (!m_IsRecording)
   {
     m_WasRecording = false;
-    m_IsRecording = true;
+    m_IsRecording = !record_current_frame;
     m_RecordFramesRemaining = numFrames;
   }
 
   m_RequestedRecordingEnd = false;
   m_FinishedCb = std::move(finishedCb);
+
+  // Video globals are not guaranteed to exist when the no-GUI boot call
+  // returns.  Arm here and let the first decoded GX command activate the
+  // recorder on the video thread, where both the snapshot and command bytes
+  // are available safely.
+  m_ActivateOnNextCommand.store(record_current_frame);
 
   m_end_of_frame_event =
       m_system.GetVideoEvents().after_frame_event.Register([this](const Core::System& system) {
@@ -272,6 +279,35 @@ void FifoRecorder::StartRecording(s32 numFrames, CallbackFunc finishedCb)
       });
 }
 
+void FifoRecorder::ActivatePendingRecording()
+{
+  if (!m_ActivateOnNextCommand.load())
+    return;
+  // Dolphin can execute backend bootstrap FIFO work before emulated MEM1 is
+  // allocated.  Keep the request armed until the first game FIFO batch where
+  // the recorder can safely shadow RAM-backed texture and vertex reads.
+  if (m_system.GetMemory().GetRAM() == nullptr)
+    return;
+  if (!m_ActivateOnNextCommand.exchange(false))
+    return;
+
+  std::lock_guard lk(m_mutex);
+  auto& memory = m_system.GetMemory();
+  m_Ram.resize(memory.GetRamSize());
+  m_ExRam.resize(memory.GetExRamSize());
+  std::ranges::fill(m_Ram, 0);
+  std::ranges::fill(m_ExRam, 0);
+  m_IsRecording = true;
+  RecordInitialVideoMemory();
+  m_WasRecording = true;
+  m_SkipNextData = false;
+  m_SkipFutureData = false;
+  m_FrameEnded = false;
+  m_FifoData.reserve(1024 * 1024 * 4);
+  m_FifoData.clear();
+  OpcodeDecoder::g_record_fifo_data = true;
+}
+
 void FifoRecorder::RecordInitialVideoMemory()
 {
   const u32* bpmem_ptr = reinterpret_cast<const u32*>(&bpmem);
@@ -290,6 +326,7 @@ void FifoRecorder::RecordInitialVideoMemory()
 void FifoRecorder::StopRecording()
 {
   std::lock_guard lk(m_mutex);
+  m_ActivateOnNextCommand.store(false);
   m_RequestedRecordingEnd = true;
 }
 

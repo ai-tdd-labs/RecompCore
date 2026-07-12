@@ -229,11 +229,12 @@ public:
     ASSERT(size >= 1);
     if constexpr (!is_preprocess)
     {
+      auto& recorder = Core::System::GetInstance().GetFifoRecorder();
       // Display lists get added directly into the FIFO stream since this same callback is used to
       // process them.
       if (g_record_fifo_data && static_cast<Opcode>(data[0]) != Opcode::GX_CMD_CALL_DL)
       {
-        Core::System::GetInstance().GetFifoRecorder().WriteGPCommand(data, size);
+        recorder.WriteGPCommand(data, size);
       }
     }
   }
@@ -261,6 +262,8 @@ u8* RunFifo(DataReader src, u32* cycles)
 {
   using CallbackT = RunCallback<is_preprocess>;
   auto callback = CallbackT{};
+  if constexpr (!is_preprocess)
+    Core::System::GetInstance().GetFifoRecorder().ActivatePendingRecording();
   u32 size = Run(src.GetPointer(), static_cast<u32>(src.size()), callback);
 
   if (cycles != nullptr)

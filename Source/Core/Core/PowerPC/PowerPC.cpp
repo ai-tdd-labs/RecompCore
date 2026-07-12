@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "Common/Assert.h"
@@ -200,10 +202,30 @@ void PowerPCManager::ResetRegisters()
 
 void PowerPCManager::InitializeCPUCore(CPUCore cpu_core)
 {
+  const char* parity_path = std::getenv("DOLPHIN_PARITY_EVENT_FILE");
+  const char* parity_fast_forward = std::getenv("DOLPHIN_PARITY_FAST_FORWARD");
+  const bool fast_forward = parity_fast_forward && parity_fast_forward[0] &&
+                            parity_fast_forward[0] != '0';
+  if (parity_path && parity_path[0] && !fast_forward)
+  {
+    // A parity capture must execute the instrumented interpreter. Command-line
+    // enum settings can be superseded by later Dolphin config layers, which
+    // previously left captures silently running JITARM64 with an empty event
+    // sidecar. The explicit event sink is the authoritative opt-in.
+    cpu_core = CPUCore::Interpreter;
+  }
   // We initialize the interpreter because
   // it is used on boot and code window independently.
   auto& interpreter = m_system.GetInterpreter();
   interpreter.Init();
+  if (parity_path && parity_path[0])
+  {
+    std::fprintf(stderr,
+                 "[parity-oracle] selected_cpu_core=%d interpreter=%d fast_forward=%d\n",
+                 static_cast<int>(cpu_core),
+                 cpu_core == CPUCore::Interpreter ? 1 : 0, fast_forward ? 1 : 0);
+    std::fflush(stderr);
+  }
 
   switch (cpu_core)
   {

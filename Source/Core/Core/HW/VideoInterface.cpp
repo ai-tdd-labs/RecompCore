@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
@@ -775,6 +776,53 @@ u32 VideoInterfaceManager::GetTicksPerHalfLine() const
 u32 VideoInterfaceManager::GetTicksPerField() const
 {
   return GetTicksPerEvenField();
+}
+
+ParityTimingSnapshot VideoInterfaceManager::GetParityTimingSnapshot(u64 current_ticks) const
+{
+  ParityTimingSnapshot snapshot;
+  snapshot.half_line = m_half_line_count;
+  snapshot.half_lines_per_frame =
+      GetHalfLinesPerEvenField() + GetHalfLinesPerOddField();
+  snapshot.ticks_per_half_line = GetTicksPerHalfLine();
+  snapshot.ticks_per_field = GetTicksPerField();
+
+  if (snapshot.half_lines_per_frame == 0 || snapshot.ticks_per_half_line == 0)
+    return snapshot;
+
+  // m_ticks_last_line_start is updated at every even half-line. Recover the
+  // current half-line's start without querying CoreTiming's private event
+  // heap, then account for the fractional half-line still in progress.
+  const u64 current_half_line_start =
+      m_ticks_last_line_start +
+      ((m_half_line_count & 1u) ? snapshot.ticks_per_half_line : 0u);
+  const u64 next_half_line_tick = current_half_line_start + snapshot.ticks_per_half_line;
+  const u64 until_next_half_line =
+      next_half_line_tick > current_ticks ? next_half_line_tick - current_ticks : 0u;
+
+  u64 best = std::numeric_limits<u64>::max();
+  for (const UVIInterruptRegister& reg : m_interrupt_register)
+  {
+    if (!reg.IR_MASK || reg.VCT == 0)
+      continue;
+    const u32 target_parity = reg.HCT > m_h_timing_0.HLW ? 1u : 0u;
+    const u32 target_half_line = 2u * (reg.VCT - 1u) + target_parity;
+    if (target_half_line >= snapshot.half_lines_per_frame)
+      continue;
+    u32 updates =
+        (target_half_line + snapshot.half_lines_per_frame - m_half_line_count) %
+        snapshot.half_lines_per_frame;
+    // A zero delta names the interrupt that fired on the preceding update;
+    // its next occurrence is one complete scan later.
+    if (updates == 0)
+      updates = snapshot.half_lines_per_frame;
+    const u64 candidate = until_next_half_line +
+                          u64{updates - 1u} * snapshot.ticks_per_half_line;
+    best = std::min(best, candidate);
+  }
+  if (best != std::numeric_limits<u64>::max())
+    snapshot.ticks_until_interrupt = best;
+  return snapshot;
 }
 
 void VideoInterfaceManager::LogField(FieldType field, u32 xfb_address) const

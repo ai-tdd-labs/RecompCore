@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -29,7 +30,9 @@ public:
   FifoRecorder& operator=(FifoRecorder&&) = delete;
   ~FifoRecorder();
 
-  void StartRecording(s32 numFrames, CallbackFunc finishedCb);
+  void StartRecording(s32 numFrames, CallbackFunc finishedCb,
+                      bool record_current_frame = false);
+  void ActivatePendingRecording();
   void StopRecording();
 
   bool IsRecordingDone() const;
@@ -70,6 +73,7 @@ private:
   // True if m_IsRecording was true during last frame
   bool m_WasRecording = false;
   bool m_RequestedRecordingEnd = false;
+  std::atomic<bool> m_ActivateOnNextCommand = false;
   s32 m_RecordFramesRemaining = 0;
   CallbackFunc m_FinishedCb;
   std::unique_ptr<FifoDataFile> m_File;

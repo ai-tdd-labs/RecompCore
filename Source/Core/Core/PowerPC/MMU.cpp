@@ -60,6 +60,8 @@
 
 namespace PowerPC
 {
+void DolphinParityTraceMemoryWrite(Core::System& system, u32 pc, u32 addr,
+                                   u32 size, u32 value);
 MMU::MMU(Core::System& system, Memory::MemoryManager& memory, PowerPC::PowerPCManager& power_pc)
     : m_system(system), m_memory(memory), m_power_pc(power_pc), m_ppc_state(power_pc.GetPPCState())
 {
@@ -349,6 +351,12 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
     WriteToHardware<flag, never_translate>(em_address_end_page, data, second_half_size);
     return;
   }
+
+  // Interpreter helpers also use the NoException path for valid guest stores.
+  // The parity hook is independently gated by level, a bounded address range,
+  // and its fine window, so observing both paths is precise and remains inert
+  // in normal Dolphin runs.
+  DolphinParityTraceMemoryWrite(m_system, m_ppc_state.pc, em_address, size, data);
 
   bool wi = false;
 
