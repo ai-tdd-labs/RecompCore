@@ -30,6 +30,7 @@
 #include "Core/PowerPC/Interpreter/ExceptionUtils.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PPCTables.h"
+#include "Core/PowerPC/PPCSymbolDB.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 #include "VideoCommon/OpcodeDecoding.h"
@@ -42,6 +43,9 @@ FILE* s_parity_event_file = nullptr;
 std::atomic<u64> s_parity_event_sequence{0};
 std::atomic<bool> s_parity_fine_window_active{false};
 std::unordered_map<std::string, u64> s_parity_kind_counts;
+std::atomic<bool> s_parity_all_function_window_active{false};
+u32 s_parity_pending_call_target = 0;
+u64 s_parity_all_function_count = 0;
 
 struct ParityJkrAllocation
 {
@@ -130,6 +134,32 @@ const ParityRegisterConfig& SelectedParityRegisterConfig()
   return config;
 }
 
+struct ParityAllFunctionConfig
+{
+  bool enabled = false;
+  u32 start_pc = 0;
+  u64 limit = 100000;
+};
+
+const ParityAllFunctionConfig& AllFunctionParityConfig()
+{
+  static const ParityAllFunctionConfig config = [] {
+    ParityAllFunctionConfig value;
+    const char* enabled = std::getenv("DOLPHIN_PARITY_TRACE_ALL_FUNCTIONS");
+    value.enabled = enabled && enabled[0] && enabled[0] != '0';
+    if (const char* raw_start = std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_START_PC"))
+      value.start_pc = static_cast<u32>(std::strtoul(raw_start, nullptr, 0));
+    if (const char* raw_limit = std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_LIMIT"))
+    {
+      const u64 parsed = std::strtoull(raw_limit, nullptr, 0);
+      if (parsed != 0)
+        value.limit = parsed;
+    }
+    return value;
+  }();
+  return config;
+}
+
 u32 ParityFunctionId(const char* name)
 {
   u32 hash = 2166136261u;
@@ -206,6 +236,82 @@ void EmitParityEvent(Core::System& system, PowerPC::PowerPCState& state, PowerPC
                static_cast<unsigned long long>(c), static_cast<unsigned long long>(d));
   if ((sequence & 0x3ffu) == 0)
     std::fflush(s_parity_event_file);
+}
+
+bool ParityBranchCondition(const PowerPC::PowerPCState& state, UGeckoInstruction inst,
+                           bool decrement_ctr)
+{
+  u32 ctr = state.spr[SPR_CTR];
+  if (decrement_ctr && (inst.BO_2 & BO_DONT_DECREMENT_FLAG) == 0)
+    --ctr;
+  const u32 counter = ((inst.BO_2 >> 2) | ((ctr != 0) ^ (inst.BO_2 >> 1))) & 1;
+  const u32 condition =
+      ((inst.BO_2 >> 4) | (state.cr.GetBit(inst.BI_2) == ((inst.BO_2 >> 3) & 1))) & 1;
+  return (counter & condition) != 0;
+}
+
+u32 ParityTakenCallTarget(const PowerPC::PowerPCState& state, UGeckoInstruction inst)
+{
+  if (inst.OPCD == 18 && inst.LK)
+  {
+    u32 target = u32(SignExt26(inst.LI << 2));
+    return inst.AA ? target : target + state.pc;
+  }
+  if (inst.OPCD == 16 && inst.LK_2 && ParityBranchCondition(state, inst, true))
+  {
+    u32 target = u32(SignExt16(s16(inst.BD << 2)));
+    return inst.AA_2 ? target : target + state.pc;
+  }
+  if (inst.OPCD != 19 || !inst.LK_3)
+    return 0;
+  if (inst.SUBOP10 == 16 && ParityBranchCondition(state, inst, true))
+    return state.spr[SPR_LR] & ~3u;
+  if (inst.SUBOP10 == 528 && ParityBranchCondition(state, inst, false))
+    return state.spr[SPR_CTR] & ~3u;
+  return 0;
+}
+
+void TraceParityAllFunctionEntry(Core::System& system, PowerPC::PowerPCState& state,
+                                 PowerPC::MMU& mmu, PPCSymbolDB& symbol_db)
+{
+  const ParityAllFunctionConfig& config = AllFunctionParityConfig();
+  if (!config.enabled || ParityCaptureLevel() < 3)
+    return;
+
+  if (!s_parity_all_function_window_active.load(std::memory_order_acquire) &&
+      config.start_pc != 0 && state.pc == config.start_pc)
+  {
+    s_parity_all_function_window_active.store(true, std::memory_order_release);
+    s_parity_all_function_count = 0;
+    EmitParityEvent(system, state, mmu, "function", "enter", state.pc,
+                    state.gpr[3], state.gpr[4], state.gpr[5], state.spr[SPR_LR]);
+    ++s_parity_all_function_count;
+  }
+  if (!s_parity_all_function_window_active.load(std::memory_order_acquire))
+    return;
+
+  if (s_parity_pending_call_target != 0)
+  {
+    if (state.pc == s_parity_pending_call_target && s_parity_all_function_count < config.limit)
+    {
+      EmitParityEvent(system, state, mmu, "function", "enter", state.pc,
+                      state.gpr[3], state.gpr[4], state.gpr[5], state.spr[SPR_LR]);
+      ++s_parity_all_function_count;
+    }
+    s_parity_pending_call_target = 0;
+  }
+  if (s_parity_all_function_count >= config.limit)
+  {
+    s_parity_all_function_window_active.store(false, std::memory_order_release);
+    return;
+  }
+  const UGeckoInstruction inst(mmu.Read_Opcode(state.pc));
+  const u32 target = ParityTakenCallTarget(state, inst);
+  const Common::Symbol* symbol = target != 0 ? symbol_db.GetSymbolFromAddr(target) : nullptr;
+  // Linking branches are occasionally used as local PC/LR tricks. Generated
+  // recomp prologues exist only at real function starts, so suppress a target
+  // proven to be an interior label while retaining unknown/dynamic targets.
+  s_parity_pending_call_target = symbol && symbol->address != target ? 0 : target;
 }
 
 void EmitParityRegisterCheckpoint(Core::System& system, PowerPC::PowerPCState& state,
@@ -443,7 +549,7 @@ void TraceParityMemoryPages(Core::System& system, PowerPC::PowerPCState& state,
 }
 
 void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState& state,
-                                    PowerPC::MMU& mmu)
+                                    PowerPC::MMU& mmu, PPCSymbolDB& symbol_db)
 {
   static u64 pad_reads = 0;
   TraceParityFloatingPoint(system, state, mmu);
@@ -478,6 +584,7 @@ void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState&
       break;
     }
   }
+  TraceParityAllFunctionEntry(system, state, mmu, symbol_db);
   bool have_current_thread = false;
   u32 cached_current_thread = 0;
   const auto current_thread = [&]() {
@@ -645,6 +752,8 @@ void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState&
   case 0x8007E2BCu:
     EmitParityEvent(system, state, mmu, "thread", "create", state.gpr[3], state.gpr[4],
                     state.gpr[5], state.gpr[8], state.gpr[6]);
+    s_parity_all_function_window_active.store(false, std::memory_order_release);
+    s_parity_pending_call_target = 0;
     break;
   case 0x8007E85Cu:
     EmitParityEvent(system, state, mmu, "thread", "resume_request", state.gpr[3],
@@ -942,7 +1051,7 @@ bool Interpreter::HandleFunctionHooking(u32 address)
 
 int Interpreter::SingleStepInner()
 {
-  TraceAnimalCrossingParityEvent(m_system, m_ppc_state, m_mmu);
+  TraceAnimalCrossingParityEvent(m_system, m_ppc_state, m_mmu, m_ppc_symbol_db);
   if (HandleFunctionHooking(m_ppc_state.pc))
   {
     UpdatePC();
