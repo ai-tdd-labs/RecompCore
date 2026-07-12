@@ -819,8 +819,11 @@ void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState&
                     current_thread(), lr, 0);
     break;
   case 0x80084DACu:
+    EmitParityEvent(system, state, mmu, "dvd", "read_async", state.gpr[3], state.gpr[4],
+                    state.gpr[5], state.gpr[6], lr);
+    break;
   case 0x80086C50u:
-    EmitParityEvent(system, state, mmu, "dvd", "read", state.gpr[3], state.gpr[4],
+    EmitParityEvent(system, state, mmu, "dvd", "read_abs_async", state.gpr[3], state.gpr[4],
                     state.gpr[5], state.gpr[6], lr);
     break;
   case 0x8008C274u:
