@@ -75,6 +75,7 @@ struct ParityLockstepConfig
   bool enabled = false;
   bool started = false;
   u32 start_pc = 0;
+  u32 end_pc = 0;
   u64 limit = 1000;
   u64 emitted = 0;
 };
@@ -372,6 +373,8 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
     value.enabled = true;
     if (const char* start = std::getenv("DOLPHIN_PARITY_LOCKSTEP_START_PC"))
       value.start_pc = static_cast<u32>(std::strtoul(start, nullptr, 0));
+    if (const char* end = std::getenv("DOLPHIN_PARITY_LOCKSTEP_END_PC"))
+      value.end_pc = static_cast<u32>(std::strtoul(end, nullptr, 0));
     if (const char* limit = std::getenv("DOLPHIN_PARITY_LOCKSTEP_LIMIT"))
     {
       const u64 parsed = std::strtoull(limit, nullptr, 0);
@@ -389,6 +392,13 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
       return;
     config.started = true;
   }
+  // A static-recompiler Level-5 slice instruments only the selected guest-PC
+  // range.  Apply the same filter in Dolphin so calls into nested functions
+  // do not look like a control-flow divergence; execution resumes at the
+  // caller's next in-range instruction and remains directly comparable.
+  if (config.end_pc != 0 &&
+      (state.pc < config.start_pc || state.pc > config.end_pc))
+    return;
 
   std::call_once(s_parity_event_init, InitParityEventFile);
   if (!s_parity_event_file)
