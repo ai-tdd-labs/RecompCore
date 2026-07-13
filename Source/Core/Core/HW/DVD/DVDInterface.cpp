@@ -1460,6 +1460,8 @@ void DVDInterface::ScheduleReads(u64 offset, u32 length, const DiscIO::Partition
 
   u32 buffered_blocks = 0;
   u32 unbuffered_blocks = 0;
+  u32 first_seek_phase = 0;
+  bool seek_phase_recorded = false;
 
   const u32 bytes_per_chunk = partition != DiscIO::PARTITION_NONE && dvd_thread.HasWiiHashes() ?
                                   DiscIO::VolumeWii::BLOCK_DATA_SIZE :
@@ -1495,6 +1497,17 @@ void DVDInterface::ScheduleReads(u64 offset, u32 length, const DiscIO::Partition
         seek = true;
         ticks_until_completion += static_cast<u64>(
             ticks_per_second * DVDMath::CalculateSeekTime(head_position, dvd_offset));
+
+        if (!seek_phase_recorded)
+        {
+          const u64 timebase_hz = ticks_per_second / SystemTimers::TIMER_RATIO;
+          const u64 phase_denominator = 2 * timebase_hz;
+          const u64 rotation_input_timebase =
+              (core_timing.GetTicks() + ticks_until_completion) / SystemTimers::TIMER_RATIO;
+          first_seek_phase = static_cast<u32>(
+              ((rotation_input_timebase % phase_denominator) * 57) % phase_denominator);
+          seek_phase_recorded = true;
+        }
 
         // TODO: The above emulates seeking and then reading one ECC block of data,
         // and then the below emulates the rotational latency. The rotational latency
@@ -1589,7 +1602,8 @@ void DVDInterface::ScheduleReads(u64 offset, u32 length, const DiscIO::Partition
   PowerPC::DolphinParityTraceHardwareEvent(
       m_system, "dvd_hw", "di_schedule", m_DICMDBUF[0], request_offset, request_length,
       static_cast<u64>(ticks_until_completion) / SystemTimers::TIMER_RATIO,
-      (static_cast<u64>(unbuffered_blocks) << 32) | buffered_blocks);
+      (static_cast<u64>(unbuffered_blocks & 0xFFFF) << 48) |
+          (static_cast<u64>(buffered_blocks & 0xFFFF) << 32) | first_seek_phase);
 }
 
 }  // namespace DVD
