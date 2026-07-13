@@ -30,6 +30,7 @@
 #include "Core/Movie.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
+#include "DiscIO/Enums.h"
 
 #include "UICommon/CommandLineParse.h"
 #ifdef USE_DISCORD_PRESENCE
@@ -273,6 +274,11 @@ int main(const int argc, char* argv[])
   parser->add_option("--fifo-record-screenshot-name")
       .action("store")
       .help("Save a PNG after the automated FIFO window under ScreenShots/<game-id>");
+  parser->add_option("--boot-gc-ipl")
+      .action("store")
+      .choices({"usa", "japan", "europe"})
+      .metavar("<usa|japan|europe>")
+      .help("Boot the installed GameCube IPL with no disc for the selected region");
 
   optparse::Values& options = CommandLineParse::ParseArguments(parser.get(), argc, argv);
   std::vector<std::string> args = parser->args();
@@ -315,8 +321,25 @@ int main(const int argc, char* argv[])
   }
 
   std::unique_ptr<BootParameters> boot;
+  std::optional<DiscIO::Region> gc_ipl_region;
   bool game_specified = false;
-  if (options.is_set("exec"))
+  if (options.is_set("boot_gc_ipl"))
+  {
+    if (options.is_set("exec") || options.is_set("nand_title") || !args.empty())
+    {
+      fprintf(stderr, "--boot-gc-ipl cannot be combined with a game or NAND title\n");
+      return 1;
+    }
+
+    const std::string region = static_cast<const char*>(options.get("boot_gc_ipl"));
+    if (region == "usa")
+      gc_ipl_region = DiscIO::Region::NTSC_U;
+    else if (region == "japan")
+      gc_ipl_region = DiscIO::Region::NTSC_J;
+    else
+      gc_ipl_region = DiscIO::Region::PAL;
+  }
+  else if (options.is_set("exec"))
   {
     const std::list<std::string> paths_list = options.all("exec");
     const std::vector<std::string> paths{std::make_move_iterator(std::begin(paths_list)),
@@ -371,6 +394,9 @@ int main(const int argc, char* argv[])
     UICommon::ShutdownControllers();
     UICommon::Shutdown();
   });
+
+  if (gc_ipl_region)
+    boot = std::make_unique<BootParameters>(BootParameters::IPL{*gc_ipl_region});
 
   if (save_state_path && !game_specified)
   {
