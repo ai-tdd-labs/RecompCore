@@ -17,6 +17,9 @@
 
 #include "Core/BootManager.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 #include <fmt/format.h>
 
 #include "Common/CommonTypes.h"
@@ -187,6 +190,16 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
 
   const bool load_ipl = !system.IsWii() && !Config::Get(Config::MAIN_SKIP_IPL) &&
                         std::holds_alternative<BootParameters::Disc>(boot->parameters);
+  if (const char* parity_path = std::getenv("DOLPHIN_PARITY_EVENT_FILE");
+      parity_path && parity_path[0])
+  {
+    std::fprintf(stderr,
+                 "[parity-oracle] boot_manager skip_ipl=%d is_wii=%d disc_boot=%d load_ipl=%d\n",
+                 Config::Get(Config::MAIN_SKIP_IPL) ? 1 : 0, system.IsWii() ? 1 : 0,
+                 std::holds_alternative<BootParameters::Disc>(boot->parameters) ? 1 : 0,
+                 load_ipl ? 1 : 0);
+    std::fflush(stderr);
+  }
   if (load_ipl)
   {
     return Core::Init(

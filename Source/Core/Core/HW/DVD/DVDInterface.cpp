@@ -38,6 +38,7 @@
 #include "Core/IOS/DI/DI.h"
 #include "Core/IOS/IOS.h"
 #include "Core/Movie.h"
+#include "Core/PowerPC/ParityTrace.h"
 #include "Core/System.h"
 
 #include "DiscIO/Blob.h"
@@ -47,13 +48,6 @@
 #include "DiscIO/VolumeWii.h"
 
 #include "VideoCommon/OnScreenDisplay.h"
-
-namespace PowerPC
-{
-void DolphinParityTraceHardwareEvent(Core::System& system, const char* family,
-                                     const char* action, u32 subject, u64 a,
-                                     u64 b, u64 c, u64 d);
-}
 
 // The minimum time it takes for the DVD drive to process a command (in microseconds)
 constexpr u64 MINIMUM_COMMAND_LATENCY_US = 300;

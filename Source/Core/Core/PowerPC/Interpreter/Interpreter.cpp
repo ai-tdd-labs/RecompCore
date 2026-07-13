@@ -595,18 +595,6 @@ void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState&
   TraceParityFloatingPoint(system, state, mmu);
   TraceParityInstruction(system, state, mmu);
   const u32 pc = state.pc;
-  static const u32 ipl_start_pc = [] {
-    const char* raw = std::getenv("DOLPHIN_PARITY_IPL_START_PC");
-    return raw && raw[0] ? static_cast<u32>(std::strtoul(raw, nullptr, 0)) : 0u;
-  }();
-  static bool ipl_start_emitted = false;
-  if (!ipl_start_emitted && ipl_start_pc != 0 && pc == ipl_start_pc)
-  {
-    ipl_start_emitted = true;
-    EmitParityEvent(system, state, mmu, "boot", "ipl_start", pc, state.gpr[3],
-                    state.gpr[4], state.gpr[5], state.msr.Hex);
-    EmitParityRegisterCheckpoint(system, state, mmu, "boot.ipl_start");
-  }
   static const u32 boot_state_pc = [] {
     const char* raw = std::getenv("DOLPHIN_PARITY_BOOT_STATE_PC");
     return raw && raw[0] ? static_cast<u32>(std::strtoul(raw, nullptr, 0)) : 0u;
@@ -977,6 +965,16 @@ void EmitRawParityEvent(Core::System& system, const char* family, const char* ac
 
 namespace PowerPC
 {
+void DolphinParityTraceBootContext(Core::System& system, const char* action, u32 pc)
+{
+  auto& state = system.GetPPCState();
+  auto& mmu = system.GetMMU();
+  EmitParityEvent(system, state, mmu, "boot", action, pc, state.gpr[3], state.gpr[4],
+                  state.gpr[5], state.msr.Hex);
+  const std::string checkpoint_name = fmt::format("boot.{}", action);
+  EmitParityRegisterCheckpoint(system, state, mmu, checkpoint_name.c_str());
+}
+
 void DolphinParityTraceHardwareEvent(Core::System& system, const char* family,
                                      const char* action, u32 subject, u64 a,
                                      u64 b, u64 c, u64 d)

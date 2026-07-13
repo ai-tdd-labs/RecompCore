@@ -51,6 +51,7 @@
 #include "Core/PatchEngine.h"
 #include "Core/PowerPC/PPCAnalyst.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
+#include "Core/PowerPC/ParityTrace.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 
@@ -471,6 +472,7 @@ bool CBoot::Load_BS2(Core::System& system, const std::string& boot_rom_filename)
   ppc_state.pc = 0x81200150;
 
   system.GetPowerPC().MSRUpdated();
+  PowerPC::DolphinParityTraceBootContext(system, "ipl_start", ppc_state.pc);
 
   return true;
 }
