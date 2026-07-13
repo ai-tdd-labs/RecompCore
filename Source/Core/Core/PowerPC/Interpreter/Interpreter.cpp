@@ -254,7 +254,10 @@ void EmitParityEvent(Core::System& system, PowerPC::PowerPCState& state, PowerPC
                static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
                static_cast<unsigned long long>(c), static_cast<unsigned long long>(d),
                guest_thread);
-  if ((sequence & 0x3ffu) == 0)
+  // Boot milestones are used as process-stop boundaries by the headless
+  // oracle.  Keeping them in stdio's buffer can make a successful IPL boot
+  // look like a timeout until another 1024 events happen to flush the file.
+  if (std::strcmp(family, "boot") == 0 || (sequence & 0x3ffu) == 0)
     std::fflush(s_parity_event_file);
 }
 
@@ -592,6 +595,18 @@ void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState&
   TraceParityFloatingPoint(system, state, mmu);
   TraceParityInstruction(system, state, mmu);
   const u32 pc = state.pc;
+  static const u32 ipl_start_pc = [] {
+    const char* raw = std::getenv("DOLPHIN_PARITY_IPL_START_PC");
+    return raw && raw[0] ? static_cast<u32>(std::strtoul(raw, nullptr, 0)) : 0u;
+  }();
+  static bool ipl_start_emitted = false;
+  if (!ipl_start_emitted && ipl_start_pc != 0 && pc == ipl_start_pc)
+  {
+    ipl_start_emitted = true;
+    EmitParityEvent(system, state, mmu, "boot", "ipl_start", pc, state.gpr[3],
+                    state.gpr[4], state.gpr[5], state.msr.Hex);
+    EmitParityRegisterCheckpoint(system, state, mmu, "boot.ipl_start");
+  }
   static const u32 boot_state_pc = [] {
     const char* raw = std::getenv("DOLPHIN_PARITY_BOOT_STATE_PC");
     return raw && raw[0] ? static_cast<u32>(std::strtoul(raw, nullptr, 0)) : 0u;
@@ -600,6 +615,9 @@ void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState&
   if (!boot_state_emitted && boot_state_pc != 0 && pc == boot_state_pc)
   {
     boot_state_emitted = true;
+    EmitParityEvent(system, state, mmu, "boot", "dol_handoff", pc, state.gpr[1],
+                    state.gpr[2], state.gpr[13], state.msr.Hex);
+    EmitParityRegisterCheckpoint(system, state, mmu, "boot.dol_handoff");
     const auto snapshot = system.GetVideoInterface().GetParityTimingSnapshot(
         system.GetCoreTiming().GetTicks());
     EmitParityEvent(system, state, mmu, "boot", "vi_state", snapshot.half_line,
