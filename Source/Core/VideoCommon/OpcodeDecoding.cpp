@@ -14,6 +14,8 @@
 
 #include "VideoCommon/OpcodeDecoding.h"
 
+#include <atomic>
+
 #include "Common/Assert.h"
 #include "Common/Logging/Log.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
@@ -33,6 +35,25 @@
 namespace OpcodeDecoder
 {
 bool g_record_fifo_data = false;
+namespace
+{
+std::atomic<u64> s_parity_recording_draw{0};
+}
+
+void ResetParityRecordingDraw()
+{
+  s_parity_recording_draw.store(0, std::memory_order_release);
+}
+
+u64 AdvanceParityRecordingDraw()
+{
+  return s_parity_recording_draw.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
+
+u64 GetParityEventDrawAnchor()
+{
+  return s_parity_recording_draw.load(std::memory_order_acquire) + 1;
+}
 
 template <bool is_preprocess>
 class RunCallback final : public Callback

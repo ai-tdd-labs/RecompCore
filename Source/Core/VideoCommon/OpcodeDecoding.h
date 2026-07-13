@@ -21,6 +21,14 @@ namespace OpcodeDecoder
 // Global flag to signal if FifoRecorder is active.
 extern bool g_record_fifo_data;
 
+// Capture-local draw boundary shared by graphics and parity-event producers.
+// An event is anchored to the next draw: events observed after draw N and
+// before draw N+1 therefore carry N+1. This makes cutting a trace through
+// draw N fail-closed without retaining CPU/OS work that occurred afterward.
+void ResetParityRecordingDraw();
+u64 AdvanceParityRecordingDraw();
+u64 GetParityEventDrawAnchor();
+
 enum class Opcode
 {
   GX_NOP = 0x00,

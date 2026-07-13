@@ -226,14 +226,16 @@ void EmitParityEvent(Core::System& system, PowerPC::PowerPCState& state, PowerPC
   }
   const u64 sequence = s_parity_event_sequence.fetch_add(1);
   const u32 guest_thread = mmu.Read<u32>(0x800000E4u);
+  const u64 draw = OpcodeDecoder::GetParityEventDrawAnchor();
   std::fprintf(s_parity_event_file,
                "{\"record\":\"event\",\"sequence\":%llu,\"family\":\"%s\","
                "\"action\":\"%s\",\"subject\":%u,\"anchor\":{"
-               "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":null},"
+               "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":%llu},"
                "\"data\":{\"a\":%llu,\"b\":%llu,\"c\":%llu,\"d\":%llu,"
                "\"thread\":%u}}\n",
                static_cast<unsigned long long>(sequence), family, action, subject,
                static_cast<unsigned long long>(timebase),
+               static_cast<unsigned long long>(draw),
                static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
                static_cast<unsigned long long>(c), static_cast<unsigned long long>(d),
                guest_thread);
@@ -329,14 +331,16 @@ void EmitParityRegisterCheckpoint(Core::System& system, PowerPC::PowerPCState& s
   const u64 timebase = system.GetSystemTimers().GetFakeTimeBase();
   const u32 function_id = ParityFunctionId(function_name);
   const u32 guest_thread = mmu.Read<u32>(0x800000E4u);
+  const u64 draw = OpcodeDecoder::GetParityEventDrawAnchor();
   std::lock_guard lk(s_parity_event_mutex);
   std::fprintf(s_parity_event_file,
                "{\"record\":\"event\",\"sequence\":%llu,\"family\":\"register\","
                "\"action\":\"checkpoint\",\"subject\":%u,\"anchor\":{"
-               "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":null},"
+               "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":%llu},"
                "\"data\":{\"thread\":%u,\"gpr\":[",
                static_cast<unsigned long long>(sequence), function_id,
-               static_cast<unsigned long long>(timebase), guest_thread);
+               static_cast<unsigned long long>(timebase),
+               static_cast<unsigned long long>(draw), guest_thread);
   for (size_t index = 0; index < std::size(state.gpr); ++index)
     std::fprintf(s_parity_event_file, "%s%u", index ? "," : "", state.gpr[index]);
   std::fputs("],\"fpr\":[", s_parity_event_file);
@@ -406,14 +410,16 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
   const u64 sequence = s_parity_event_sequence.fetch_add(1);
   const u64 timebase = system.GetSystemTimers().GetFakeTimeBase();
   const u32 opcode = mmu.Read<u32>(state.pc);
+  const u64 draw = OpcodeDecoder::GetParityEventDrawAnchor();
   std::lock_guard lk(s_parity_event_mutex);
   std::fprintf(s_parity_event_file,
                "{\"record\":\"event\",\"sequence\":%llu,\"family\":\"instruction\","
                "\"action\":\"checkpoint\",\"subject\":%u,\"anchor\":{"
-               "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":null},"
+               "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":%llu},"
                "\"data\":{\"opcode\":%u,\"gpr\":[",
                static_cast<unsigned long long>(sequence), state.pc,
-               static_cast<unsigned long long>(timebase), opcode);
+               static_cast<unsigned long long>(timebase),
+               static_cast<unsigned long long>(draw), opcode);
   for (size_t index = 0; index < std::size(state.gpr); ++index)
     std::fprintf(s_parity_event_file, "%s%u", index ? "," : "", state.gpr[index]);
   std::fprintf(s_parity_event_file, "],\"fpr\":[");
@@ -920,14 +926,16 @@ void EmitRawParityEvent(Core::System& system, const char* family, const char* ac
     return;
   const u64 sequence = s_parity_event_sequence.fetch_add(1);
   const u64 timebase = system.GetSystemTimers().GetFakeTimeBase();
+  const u64 draw = OpcodeDecoder::GetParityEventDrawAnchor();
   std::lock_guard lk(s_parity_event_mutex);
   std::fprintf(s_parity_event_file,
                "{\"record\":\"event\",\"sequence\":%llu,\"family\":\"%s\","
                "\"action\":\"%s\",\"subject\":%u,\"anchor\":{"
-               "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":null},"
+               "\"timebase\":%llu,\"retrace\":null,\"copy_epoch\":null,\"draw\":%llu},"
                "\"data\":{\"a\":%llu,\"b\":%llu,\"c\":%llu,\"d\":%llu}}\n",
                static_cast<unsigned long long>(sequence), family, action, subject,
                static_cast<unsigned long long>(timebase),
+               static_cast<unsigned long long>(draw),
                static_cast<unsigned long long>(a), static_cast<unsigned long long>(b),
                static_cast<unsigned long long>(c), static_cast<unsigned long long>(d));
   std::fflush(s_parity_event_file);

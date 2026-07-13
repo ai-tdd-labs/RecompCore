@@ -80,8 +80,9 @@ const ParityEFBDrawDumpConfig& GetParityEFBDrawDumpConfig()
 
 void DumpParityEFBAfterDraw()
 {
-  static u64 draw = 0;
-  ++draw;
+  if (!OpcodeDecoder::g_record_fifo_data)
+    return;
+  const u64 draw = OpcodeDecoder::AdvanceParityRecordingDraw();
 
   const ParityEFBDrawDumpConfig& config = GetParityEFBDrawDumpConfig();
   if (config.start == 0 || draw < config.start || draw > config.end || !g_framebuffer_manager)

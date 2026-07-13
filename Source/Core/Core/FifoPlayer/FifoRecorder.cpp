@@ -270,6 +270,7 @@ void FifoRecorder::StartRecording(s32 numFrames, CallbackFunc finishedCb,
 
         if (!was_recording)
         {
+          OpcodeDecoder::ResetParityRecordingDraw();
           RecordInitialVideoMemory();
         }
 
@@ -305,6 +306,7 @@ void FifoRecorder::ActivatePendingRecording()
   m_FrameEnded = false;
   m_FifoData.reserve(1024 * 1024 * 4);
   m_FifoData.clear();
+  OpcodeDecoder::ResetParityRecordingDraw();
   OpcodeDecoder::g_record_fifo_data = true;
 }
 
