@@ -139,6 +139,11 @@ private:
   static u32 LsHwReadTrampoline(u32 physical_address, u32 size, void* user);
 
   using SetMemJournalFn = void (*)(void (*)(u32, u32, void*), void*);
+  using SetDecHooksFn = void (*)(void (*)(u32, void*), u32 (*)(void*), void*);
+  using SetSprHooksFn = void (*)(u32 (*)(u32, void*), void (*)(u32, u32, void*), void*);
+
+  static void HookSupervisorSprWrite(u32 spr, u32 value, void* user);
+  static u32 HookSupervisorSprRead(u32 spr, void* user);
 
   struct LsWrite
   {
@@ -159,6 +164,8 @@ private:
   u64 m_ls_undercharges = 0;      // blocks regs-exact but native undercharged downcount (D3)
   s64 m_ls_max_undercharge = 0;   // worst per-block cycle deficit observed
   SetMemJournalFn m_set_mem_journal = nullptr;  // resolved from the module
+  SetDecHooksFn m_set_dec_hooks = nullptr;      // optional real decrementer bridge
+  SetSprHooksFn m_set_spr_hooks = nullptr;      // optional supervisor-register bridge
   std::unordered_set<u32> m_ls_checked;    // entry PCs already checked (dedupe)
   std::unordered_set<u32> m_ls_whitelist;  // entry PCs never reported (known-benign)
   u32 m_ls_trace_pc = 0;  // STATICRECOMP_LOCKSTEP_TRACE: per-instr shadow dump for one entry PC

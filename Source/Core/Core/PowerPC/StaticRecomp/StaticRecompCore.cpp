@@ -22,6 +22,7 @@
 #include "Core/HW/SystemTimers.h"
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/Interpreter/Interpreter.h"
+#include "Core/PowerPC/Interpreter/Interpreter_FPUtils.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -60,6 +61,22 @@ constexpr s64 LS_UNDERCHARGE_GRACE = 256;
 // they can stay pending for a long time and CheckExceptions cannot clear them.
 constexpr u32 SYNC_EXCEPTION_MASK = ~static_cast<u32>(
     EXCEPTION_EXTERNAL_INT | EXCEPTION_DECREMENTER | EXCEPTION_PERFORMANCE_MONITOR);
+
+constexpr u64 PACKED_SINGLE_TAG = 1ull << 32;
+
+constexpr bool HasCurrentPackedSingleTag(u64 ps0_bits, u64 ps1_bits)
+{
+  if ((ps1_bits & PACKED_SINGLE_TAG) == 0)
+    return false;
+  const u32 ps0_hi = static_cast<u32>(ps0_bits >> 32);
+  const u32 ps0_lo = static_cast<u32>(ps0_bits);
+  return ps0_hi == ps0_lo || static_cast<u32>(ps1_bits) == ps0_lo;
+}
+
+static_assert(HasCurrentPackedSingleTag(0x3F8000003F800000ull, 0x000000013F000000ull));
+static_assert(HasCurrentPackedSingleTag(0x4000000000000000ull, 0x0000000100000000ull));
+static_assert(!HasCurrentPackedSingleTag(0x4000000000000000ull, 0x000000013F000000ull));
+static_assert(!HasCurrentPackedSingleTag(0x3F8000003F800000ull, 0x000000003F000000ull));
 
 #ifdef __APPLE__
 constexpr const char* MODULE_SUFFIX = ".dylib";
@@ -243,6 +260,13 @@ void StaticRecompCore::Shutdown()
     if (m_set_mem_journal)
       m_set_mem_journal(nullptr, nullptr);
   }
+  // These hooks are installed whenever the module exports them, independently
+  // of lockstep. Clear them before unloading the shared library so no callback
+  // can retain a pointer into the unloaded RecompCore instance.
+  if (m_set_dec_hooks)
+    m_set_dec_hooks(nullptr, nullptr, nullptr);
+  if (m_set_spr_hooks)
+    m_set_spr_hooks(nullptr, nullptr, nullptr);
   m_block_cache.Shutdown();
   m_module = nullptr;
   if (m_library.IsOpen())
@@ -314,7 +338,12 @@ void StaticRecompCore::LoadModule()
     return reject("no dispatch entry or empty code ranges");
   if (!desc->chunk_ranges || desc->num_chunk_ranges == 0 || !desc->chunk_hashes)
     return reject("no chunk ranges/hashes (required for the SMC guard)");
-  if (!game_id.empty() && game_id != desc->game_id)
+  // A direct no-disc GameCube IPL boot has no disc game ID. Dolphin represents
+  // that boot session as the synthetic ID "00000000", while an IPL recomp
+  // module deliberately leaves its game_id empty. Accept exactly that pair;
+  // an empty module ID is not a wildcard for normal games.
+  const bool is_no_disc_ipl_module = game_id == "00000000" && desc->game_id[0] == '\0';
+  if (!game_id.empty() && game_id != desc->game_id && !is_no_disc_ipl_module)
     return reject(fmt::format("module game_id '{}' != running game '{}'", desc->game_id, game_id));
 
   m_module = desc;
@@ -325,6 +354,42 @@ void StaticRecompCore::LoadModule()
   // lockstep stays disabled even if requested (warned in InitLockstep).
   m_set_mem_journal = reinterpret_cast<SetMemJournalFn>(
       m_library.GetSymbolAddress("ppc_set_mem_write_journal"));
+  m_set_dec_hooks = reinterpret_cast<SetDecHooksFn>(
+      m_library.GetSymbolAddress("ppc_set_dec_hooks"));
+  if (m_set_dec_hooks)
+  {
+    m_set_dec_hooks(
+        [](u32 value, void* user) {
+          auto* system = static_cast<Core::System*>(user);
+          auto& ppc = system->GetPPCState();
+          const u32 old_value = ppc.spr[SPR_DEC];
+          ppc.spr[SPR_DEC] = value;
+          // Match Interpreter::mtspr: software can trigger the decrementer
+          // exception immediately by changing DEC's sign bit from 0 to 1.
+          if ((old_value >> 31) == 0 && (value >> 31) != 0)
+            ppc.Exceptions |= EXCEPTION_DECREMENTER;
+          system->GetSystemTimers().DecrementerSet();
+        },
+        [](void* user) -> u32 {
+          auto* system = static_cast<Core::System*>(user);
+          auto& ppc = system->GetPPCState();
+          // Match Interpreter::mfspr: only a live, non-negative decrementer is
+          // derived from CoreTiming. Once expired, the stored value is read.
+          if ((ppc.spr[SPR_DEC] & 0x80000000u) == 0)
+            ppc.spr[SPR_DEC] = system->GetSystemTimers().GetFakeDecrementer();
+          return ppc.spr[SPR_DEC];
+        },
+        &m_system);
+    std::fprintf(stderr, "[staticrecomp] decrementer hooks installed\n");
+  }
+  m_set_spr_hooks = reinterpret_cast<SetSprHooksFn>(
+      m_library.GetSymbolAddress("ppc_set_spr_hooks"));
+  if (m_set_spr_hooks)
+  {
+    m_set_spr_hooks(&StaticRecompCore::HookSupervisorSprRead,
+                    &StaticRecompCore::HookSupervisorSprWrite, this);
+    std::fprintf(stderr, "[staticrecomp] supervisor SPR hooks installed\n");
+  }
 
   // Native recompiled code has no instruction-cache model: generated icbi
   // instructions are no-ops. Keep interpreter fallback coherent with that
@@ -565,6 +630,73 @@ void StaticRecompCore::PropagateGuestMSR()
   {
     ppc.msr.Hex = m_guest.msr;
     power_pc.MSRUpdated();
+  }
+}
+
+void StaticRecompCore::HookSupervisorSprWrite(u32 spr, u32 value, void* user)
+{
+  auto* core = static_cast<StaticRecompCore*>(user);
+  auto& ppc = core->m_system.GetPPCState();
+  if (spr >= 1024)
+    return;
+
+  const u32 old_value = ppc.spr[spr];
+  ppc.spr[spr] = value;
+  switch (spr)
+  {
+  case SPR_PVR:
+    ppc.spr[spr] = old_value;
+    break;
+  case SPR_HID0:
+    if (HID0(ppc).ICFI)
+    {
+      HID0(ppc).ICFI = 0;
+      ppc.iCache.Reset(core->m_system.GetJitInterface());
+    }
+    break;
+  case SPR_HID1:
+    ppc.spr[spr] &= 0xF8000000u;
+    break;
+  case SPR_HID2:
+    ppc.spr[spr] = (ppc.spr[spr] & 0xF0FF0000u) | (old_value & 0x0F000000u);
+    core->m_guest.hid2 = ppc.spr[spr];
+    break;
+  case SPR_HID4:
+    if (old_value != ppc.spr[spr])
+    {
+      core->m_system.GetMMU().IBATUpdated();
+      core->m_system.GetMMU().DBATUpdated();
+    }
+    break;
+  case SPR_MMCR0:
+  case SPR_MMCR1:
+    PowerPC::MMCRUpdated(ppc);
+    break;
+  default:
+    break;
+  }
+}
+
+u32 StaticRecompCore::HookSupervisorSprRead(u32 spr, void* user)
+{
+  auto* core = static_cast<StaticRecompCore*>(user);
+  auto& ppc = core->m_system.GetPPCState();
+  if (spr >= 1024)
+    return 0;
+  switch (spr)
+  {
+  case SPR_UPMC1:
+    return ppc.spr[SPR_PMC1];
+  case SPR_UPMC2:
+    return ppc.spr[SPR_PMC2];
+  case SPR_UPMC3:
+    return ppc.spr[SPR_PMC3];
+  case SPR_UPMC4:
+    return ppc.spr[SPR_PMC4];
+  case SPR_IABR:
+    return ppc.spr[spr] & ~1u;
+  default:
+    return ppc.spr[spr];
   }
 }
 
@@ -840,8 +972,20 @@ void StaticRecompCore::LoadEntryRegsToPPC(const CPUState& s)
   std::memcpy(ppc.gpr, s.gpr, sizeof(ppc.gpr));
   for (int i = 0; i < 32; ++i)
   {
-    std::memcpy(&ppc.ps[i].ps0, &s.fpr[i], sizeof(u64));
-    std::memcpy(&ppc.ps[i].ps1, &s.ps1[i], sizeof(u64));
+    u64 ps0_bits;
+    u64 ps1_bits;
+    std::memcpy(&ps0_bits, &s.fpr[i], sizeof(u64));
+    std::memcpy(&ps1_bits, &s.ps1[i], sizeof(u64));
+    // GekkoRecomp preserves paired singles as tagged raw f32 lanes across
+    // native dispatches. The interpreter shadow expects Dolphin's materialized
+    // f64 representation, including its bit-exact signaling-NaN conversion.
+    if (HasCurrentPackedSingleTag(ps0_bits, ps1_bits))
+    {
+      ps0_bits = ConvertToDouble(static_cast<u32>(ps0_bits >> 32));
+      ps1_bits = ConvertToDouble(static_cast<u32>(ps1_bits));
+    }
+    std::memcpy(&ppc.ps[i].ps0, &ps0_bits, sizeof(u64));
+    std::memcpy(&ppc.ps[i].ps1, &ps1_bits, sizeof(u64));
   }
   ppc.pc = s.pc;
   ppc.npc = s.pc;
@@ -1183,10 +1327,40 @@ void StaticRecompCore::LockstepCheck(u32 entry_pc, u32 end_pc, const CPUState& e
     // trip the emitter DID return from — a real boundary (e.g. a `bl` to a
     // function whose own entry is a loop header, GetLinearVelocity/AngularVelocity
     // in Strikers) — so keep it.
-    if (ppc.pc == end_pc && ppc.pc != before + 4)
+    const u32 branch_offset = before - 0x80000000u;
+    const u32 branch_insn =
+        (branch_offset + 4u <= ram_size) ? Common::swap32(&ram[branch_offset]) : 0u;
+    const u32 branch_opcode = branch_insn >> 26;
+    const s32 bc_displacement = static_cast<s16>(branch_insn & 0xFFFCu);
+    const u32 bc_target = (branch_insn & 2u) != 0 ? static_cast<u32>(bc_displacement) :
+                                                   before + bc_displacement;
+    const u32 bc_bo = (branch_insn >> 21) & 0x1Fu;
+    const u32 bc_bi = (branch_insn >> 16) & 0x1Fu;
+    // SingleStepInner has already applied the optional CTR decrement. Reuse
+    // Dolphin's branch-condition equations on the resulting CTR and unchanged
+    // CR so an untaken conditional branch cannot masquerade as a boundary when
+    // a later loop happens to return to its fall-through address.
+    const u32 bc_counter =
+        ((bc_bo >> 2) | ((static_cast<u32>(ppc.spr[SPR_CTR] != 0) ^ (bc_bo >> 1)))) & 1u;
+    const u32 bc_condition =
+        ((bc_bo >> 4) | (static_cast<u32>(ppc.cr.GetBit(bc_bi)) == ((bc_bo >> 3) & 1u))) & 1u;
+    const bool bc_taken = branch_opcode == 16u && (bc_counter & bc_condition) != 0;
+    // GekkoRecomp intentionally lets CodeWarrior's `bcl ...,+4` PIC idiom
+    // fall through after publishing LR. Other taken opcode-16 branches return
+    // from block mode just like direct b/bl and must count as boundaries.
+    const bool bcl_next_falls_through =
+        branch_opcode == 16u && (branch_insn & 1u) != 0 && bc_target == before + 4;
+    const bool emitted_direct_branch =
+        branch_opcode == 18u || (bc_taken && !bcl_next_falls_through);
+    // Block-return GekkoRecomp returns for every direct b/bl. A branch whose
+    // target happens to equal CIA+4 still is a native dispatch boundary even
+    // though the interpreter's resulting PC looks like ordinary fall-through.
+    const bool sequential_direct_branch =
+        emitted_direct_branch && ppc.pc == end_pc && ppc.pc == before + 4;
+    if ((ppc.pc == end_pc && ppc.pc != before + 4) || sequential_direct_branch)
     {
       bool is_boundary = true;
-      if (end_is_loop_header && before < end_pc)
+      if (end_is_loop_header && before < end_pc && !emitted_direct_branch)
       {
         const u32 boff = before - 0x80000000u;
         const u32 binsn = (boff + 4u <= ram_size) ? Common::swap32(&ram[boff]) : 0u;
@@ -1258,13 +1432,21 @@ void StaticRecompCore::LockstepCheck(u32 entry_pc, u32 end_pc, const CPUState& e
       addu(fmt::format("r{}", r), m_guest.gpr[r], ppc.gpr[r]);
     for (int r = 0; r < 32; ++r)
     {
-      u64 n, i;
-      std::memcpy(&n, &m_guest.fpr[r], sizeof(u64));
-      std::memcpy(&i, &ppc.ps[r].ps0, sizeof(u64));
-      addu(fmt::format("f{}", r), n, i);
-      std::memcpy(&n, &m_guest.ps1[r], sizeof(u64));
-      std::memcpy(&i, &ppc.ps[r].ps1, sizeof(u64));
-      addu(fmt::format("ps1_{}", r), n, i);
+      u64 native_ps0;
+      u64 native_ps1;
+      u64 interpreter_ps0;
+      u64 interpreter_ps1;
+      std::memcpy(&native_ps0, &m_guest.fpr[r], sizeof(u64));
+      std::memcpy(&native_ps1, &m_guest.ps1[r], sizeof(u64));
+      std::memcpy(&interpreter_ps0, &ppc.ps[r].ps0, sizeof(u64));
+      std::memcpy(&interpreter_ps1, &ppc.ps[r].ps1, sizeof(u64));
+      if (HasCurrentPackedSingleTag(native_ps0, native_ps1))
+      {
+        native_ps0 = ConvertToDouble(static_cast<u32>(native_ps0 >> 32));
+        native_ps1 = ConvertToDouble(static_cast<u32>(native_ps1));
+      }
+      addu(fmt::format("f{}", r), native_ps0, interpreter_ps0);
+      addu(fmt::format("ps1_{}", r), native_ps1, interpreter_ps1);
     }
     addu("lr", m_guest.lr, ppc.spr[SPR_LR]);
     addu("ctr", m_guest.ctr, ppc.spr[SPR_CTR]);
