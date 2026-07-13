@@ -75,9 +75,10 @@ bool IsCompactParitySystemFamily(const char* family)
 {
   if (!family)
     return false;
-  static constexpr std::array<const char*, 16> families = {
+  static constexpr std::array<const char*, 20> families = {
       "thread", "scheduler", "queue", "timer", "interrupt", "time", "vi", "dvd",
-      "aram", "input", "dsp", "audio", "exi", "rtc", "savecard", "bba",
+      "aram", "input", "dsp", "audio", "exi", "rtc", "savecard", "bba", "loader",
+      "allocation", "rng", "resource",
   };
   return std::any_of(families.begin(), families.end(), [family](const char* candidate) {
     return std::strcmp(family, candidate) == 0;
