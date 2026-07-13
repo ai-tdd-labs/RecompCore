@@ -252,10 +252,12 @@ void StaticRecompCore::Shutdown()
   {
     std::fprintf(stderr,
                  "[lockstep] summary: checks=%llu reports=%llu skipped_fallback=%llu "
-                 "skipped_zero=%llu undercharges=%llu max_deficit=%lld distinct_pcs=%zu\n",
+                 "skipped_zero=%llu undercharges=%llu max_deficit=%lld "
+                 "overcharges=%llu max_excess=%lld distinct_pcs=%zu\n",
                  (unsigned long long)m_ls_checks, (unsigned long long)m_ls_reports,
                  (unsigned long long)m_ls_skipped_fallback, (unsigned long long)m_ls_skipped_zero,
                  (unsigned long long)m_ls_undercharges, (long long)m_ls_max_undercharge,
+                 (unsigned long long)m_ls_overcharges, (long long)m_ls_max_overcharge,
                  m_ls_checked.size());
     if (m_set_mem_journal)
       m_set_mem_journal(nullptr, nullptr);
@@ -1401,6 +1403,7 @@ void StaticRecompCore::LockstepCheck(u32 entry_pc, u32 end_pc, const CPUState& e
   }
   const bool reached = (ppc.pc == end_pc);
   const bool undercharged = reached && interp_cycles > native_charge;
+  const bool overcharged = reached && interp_cycles < native_charge;
 
   StaticRecompLockstep::g_hw_write_sink = nullptr;
   StaticRecompLockstep::g_hw_write_sink_user = nullptr;
@@ -1548,6 +1551,26 @@ void StaticRecompCore::LockstepCheck(u32 entry_pc, u32 end_pc, const CPUState& e
                    "N_cyc=%lld I_cyc=%lld deficit=%lld (regs/mem exact)\n",
                    (unsigned long long)m_ls_undercharges, entry_pc, end_pc,
                    (long long)native_charge, (long long)interp_cycles, (long long)deficit);
+    }
+  }
+  else if (overcharged)
+  {
+    // Reaching native's actual dispatch boundary before consuming its charge
+    // means the generated block charged more than Dolphin's interpreter cost.
+    // Keep this separate from architectural reports: an exception can
+    // legitimately leave a statically charged block early, while ordinary
+    // blocks should remain at zero excess.
+    ++m_ls_overcharges;
+    const s64 excess = native_charge - interp_cycles;
+    if (excess > m_ls_max_overcharge)
+      m_ls_max_overcharge = excess;
+    if (m_ls_overcharges <= 64)
+    {
+      std::fprintf(stderr,
+                   "[lockstep] OVERCHARGE #%llu entry=0x%08X end=0x%08X: "
+                   "N_cyc=%lld I_cyc=%lld excess=%lld (regs/mem exact)\n",
+                   (unsigned long long)m_ls_overcharges, entry_pc, end_pc,
+                   (long long)native_charge, (long long)interp_cycles, (long long)excess);
     }
   }
 

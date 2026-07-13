@@ -163,6 +163,8 @@ private:
   u64 m_ls_skipped_zero = 0;      // blocks skipped (zero cycle charge: no alignable work)
   u64 m_ls_undercharges = 0;      // blocks regs-exact but native undercharged downcount (D3)
   s64 m_ls_max_undercharge = 0;   // worst per-block cycle deficit observed
+  u64 m_ls_overcharges = 0;       // blocks regs-exact but native charged beyond their boundary
+  s64 m_ls_max_overcharge = 0;    // worst per-block excess observed
   SetMemJournalFn m_set_mem_journal = nullptr;  // resolved from the module
   SetDecHooksFn m_set_dec_hooks = nullptr;      // optional real decrementer bridge
   SetSprHooksFn m_set_spr_hooks = nullptr;      // optional supervisor-register bridge
