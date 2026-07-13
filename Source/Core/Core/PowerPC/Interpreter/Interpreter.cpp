@@ -957,6 +957,18 @@ void EmitRawParityEvent(Core::System& system, const char* family, const char* ac
 }
 }  // namespace
 
+namespace PowerPC
+{
+void DolphinParityTraceHardwareEvent(Core::System& system, const char* family,
+                                     const char* action, u32 subject, u64 a,
+                                     u64 b, u64 c, u64 d)
+{
+  if (ParityCaptureLevel() < 2)
+    return;
+  EmitRawParityEvent(system, family, action, subject, a, b, c, d);
+}
+}  // namespace PowerPC
+
 namespace MMIO
 {
 void DolphinParityTraceMMIO(Core::System& system, bool write, u32 addr,

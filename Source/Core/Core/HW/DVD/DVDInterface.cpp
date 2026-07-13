@@ -48,6 +48,13 @@
 
 #include "VideoCommon/OnScreenDisplay.h"
 
+namespace PowerPC
+{
+void DolphinParityTraceHardwareEvent(Core::System& system, const char* family,
+                                     const char* action, u32 subject, u64 a,
+                                     u64 b, u64 c, u64 d);
+}
+
 // The minimum time it takes for the DVD drive to process a command (in microseconds)
 constexpr u64 MINIMUM_COMMAND_LATENCY_US = 300;
 
@@ -1357,6 +1364,8 @@ void DVDInterface::FinishExecutingCommand(ReplyType reply_type, DIInterruptType 
 void DVDInterface::ScheduleReads(u64 offset, u32 length, const DiscIO::Partition& partition,
                                  u32 output_address, ReplyType reply_type)
 {
+  const u64 request_offset = offset;
+  const u32 request_length = length;
   // The drive continues to read 1 MiB beyond the last read position when idle.
   // If a future read falls within this window, part of the read may be returned
   // from the buffer. Data can be transferred from the buffer at up to 32 MiB/s.
@@ -1576,6 +1585,11 @@ void DVDInterface::ScheduleReads(u64 offset, u32 length, const DiscIO::Partition
                 "ticks={}, time={} us",
                 unbuffered_blocks, buffered_blocks, ticks_until_completion,
                 ticks_until_completion * 1000000 / m_system.GetSystemTimers().GetTicksPerSecond());
+
+  PowerPC::DolphinParityTraceHardwareEvent(
+      m_system, "dvd_hw", "di_schedule", m_DICMDBUF[0], request_offset, request_length,
+      static_cast<u64>(ticks_until_completion) / SystemTimers::TIMER_RATIO,
+      (static_cast<u64>(unbuffered_blocks) << 32) | buffered_blocks);
 }
 
 }  // namespace DVD
