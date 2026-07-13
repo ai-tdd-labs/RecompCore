@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -68,6 +69,19 @@ int ParityCaptureLevel()
     return parsed >= 1 && parsed <= 5 ? parsed : 2;
   }();
   return level;
+}
+
+bool IsCompactParitySystemFamily(const char* family)
+{
+  if (!family)
+    return false;
+  static constexpr std::array<const char*, 16> families = {
+      "thread", "scheduler", "queue", "timer", "interrupt", "time", "vi", "dvd",
+      "aram", "input", "dsp", "audio", "exi", "rtc", "savecard", "bba",
+  };
+  return std::any_of(families.begin(), families.end(), [family](const char* candidate) {
+    return std::strcmp(family, candidate) == 0;
+  });
 }
 
 struct ParityLockstepConfig
@@ -210,7 +224,7 @@ void EmitParityEvent(Core::System& system, PowerPC::PowerPCState& state, PowerPC
     return;
   const u64 timebase = system.GetSystemTimers().GetFakeTimeBase();
   std::lock_guard lk(s_parity_event_mutex);
-  if (ParityCaptureLevel() <= 2)
+  if (ParityCaptureLevel() <= 2 || IsCompactParitySystemFamily(family))
   {
     static const u64 max_per_kind = [] {
       const char* raw = std::getenv("DOLPHIN_PARITY_LEVEL2_MAX_PER_KIND");
