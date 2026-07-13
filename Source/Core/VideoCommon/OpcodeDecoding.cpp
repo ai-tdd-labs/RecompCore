@@ -29,6 +29,7 @@
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VertexLoaderBase.h"
 #include "VideoCommon/VertexLoaderManager.h"
+#include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/XFMemory.h"
 #include "VideoCommon/XFStateManager.h"
 
@@ -154,6 +155,11 @@ public:
         VertexLoaderManager::RunVertices<is_preprocess>(vat, primitive, num_vertices, vertex_data);
 
     ASSERT(bytes == size);
+
+    // Count the exact GX primitive boundary written to the DFF command stream. Dolphin normally
+    // batches compatible primitives, so an active per-draw EFB oracle also flushes here.
+    if constexpr (!is_preprocess)
+      OnParityRecordingPrimitiveBoundary();
 
     // 4 GPU ticks per vertex, 3 CPU ticks per GPU tick
     m_cycles += num_vertices * 4 * 3 + 6;

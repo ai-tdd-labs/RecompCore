@@ -78,12 +78,8 @@ const ParityEFBDrawDumpConfig& GetParityEFBDrawDumpConfig()
   return config;
 }
 
-void DumpParityEFBAfterDraw()
+void DumpParityEFBAfterDraw(u64 draw)
 {
-  if (!OpcodeDecoder::g_record_fifo_data)
-    return;
-  const u64 draw = OpcodeDecoder::AdvanceParityRecordingDraw();
-
   const ParityEFBDrawDumpConfig& config = GetParityEFBDrawDumpConfig();
   if (config.start == 0 || draw < config.start || draw > config.end || !g_framebuffer_manager)
     return;
@@ -103,6 +99,17 @@ void DumpParityEFBAfterDraw()
     ERROR_LOG_FMT(VIDEO, "Parity oracle failed to dump EFB after draw {} to {}", draw, path);
 }
 }  // namespace
+
+void OnParityRecordingPrimitiveBoundary()
+{
+  if (!OpcodeDecoder::g_record_fifo_data)
+    return;
+
+  if (GetParityEFBDrawDumpConfig().start != 0 && g_vertex_manager)
+    g_vertex_manager->Flush();
+
+  DumpParityEFBAfterDraw(OpcodeDecoder::AdvanceParityRecordingDraw());
+}
 
 using OpcodeDecoder::Primitive;
 
@@ -723,11 +730,6 @@ void VertexManagerBase::Flush()
 
     // Even if we skip the draw, emulated state should still be impacted
     OnDraw();
-
-    // Optional oracle zoom: capture the raw EFB exactly at a selected draw
-    // boundary. Disabled unless all DOLPHIN_PARITY_DUMP_EFB_DRAW_* variables
-    // are supplied, so normal Dolphin rendering has no readback cost.
-    DumpParityEFBAfterDraw();
 
     // The EFB cache is now potentially stale.
     g_framebuffer_manager->FlagPeekCacheAsOutOfDate();

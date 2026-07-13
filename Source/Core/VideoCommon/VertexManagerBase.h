@@ -256,3 +256,7 @@ private:
 };
 
 extern std::unique_ptr<VertexManagerBase> g_vertex_manager;
+
+// Record one exact GX primitive boundary for the parity oracle. When per-draw EFB dumping is
+// enabled this also flushes Dolphin's normally batched rendering before capturing the EFB.
+void OnParityRecordingPrimitiveBoundary();
