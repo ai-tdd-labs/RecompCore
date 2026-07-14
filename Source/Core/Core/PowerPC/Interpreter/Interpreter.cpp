@@ -104,10 +104,12 @@ struct ParityLockstepConfig
   bool started = false;
   bool start_lr_set = false;
   bool start_gpr_set = false;
+  bool start_min_retrace_set = false;
   u32 start_pc = 0;
   u32 start_lr = 0;
   u32 start_gpr_index = 0;
   u32 start_gpr_value = 0;
+  u64 start_min_retrace = 0;
   u32 end_pc = 0;
   u64 limit = 1000;
   u64 emitted = 0;
@@ -525,6 +527,12 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
         }
       }
     }
+    if (const char* min_retrace =
+            std::getenv("DOLPHIN_PARITY_LOCKSTEP_MIN_RETRACE"))
+    {
+      value.start_min_retrace_set = min_retrace[0] != '\0';
+      value.start_min_retrace = std::strtoull(min_retrace, nullptr, 0);
+    }
     if (const char* end = std::getenv("DOLPHIN_PARITY_LOCKSTEP_END_PC"))
       value.end_pc = static_cast<u32>(std::strtoul(end, nullptr, 0));
     if (const char* limit = std::getenv("DOLPHIN_PARITY_LOCKSTEP_LIMIT"))
@@ -546,11 +554,14 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
     return;
   if (!config.started)
   {
+    const u64 current_retrace = system.GetVideoInterface().GetParityRetraceCount();
     const bool start_matches =
         state.pc == config.start_pc &&
         (!config.start_lr_set || state.spr[SPR_LR] == config.start_lr) &&
         (!config.start_gpr_set ||
          state.gpr[config.start_gpr_index] == config.start_gpr_value) &&
+        (!config.start_min_retrace_set ||
+         current_retrace >= config.start_min_retrace) &&
         LockstepStartMemoryMatches(mmu);
     if (!start_matches)
     {
@@ -561,7 +572,7 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
         entry.opcode = mmu.Read<u32>(state.pc);
         entry.fpscr = state.fpscr.Hex;
         entry.timebase = system.GetSystemTimers().GetFakeTimeBase();
-        entry.retrace = system.GetVideoInterface().GetParityRetraceCount();
+        entry.retrace = current_retrace;
         entry.draw = OpcodeDecoder::GetParityEventDrawAnchor();
         if (config.prehistory.size() < config.prehistory_limit)
         {
