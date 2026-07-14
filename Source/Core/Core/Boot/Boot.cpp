@@ -472,6 +472,7 @@ bool CBoot::Load_BS2(Core::System& system, const std::string& boot_rom_filename)
   ppc_state.pc = 0x81200150;
 
   system.GetPowerPC().MSRUpdated();
+  system.GetVideoInterface().ResetParityRetraceOrigin();
   PowerPC::DolphinParityTraceBootContext(system, "ipl_start", ppc_state.pc);
 
   return true;

@@ -85,6 +85,8 @@ void VideoInterfaceManager::DoState(PointerWrap& p)
   p.Do(m_target_refresh_rate_numerator);
   p.Do(m_target_refresh_rate_denominator);
   p.Do(m_ticks_last_line_start);
+  p.Do(m_parity_retrace_count);
+  p.Do(m_parity_retrace_origin);
   p.Do(m_half_line_count);
   p.Do(m_half_line_of_next_si_poll);
   p.Do(m_even_field_first_hl);
@@ -778,6 +780,16 @@ u32 VideoInterfaceManager::GetTicksPerField() const
   return GetTicksPerEvenField();
 }
 
+u64 VideoInterfaceManager::GetParityRetraceCount() const
+{
+  return m_parity_retrace_count - m_parity_retrace_origin;
+}
+
+void VideoInterfaceManager::ResetParityRetraceOrigin()
+{
+  m_parity_retrace_origin = m_parity_retrace_count;
+}
+
 ParityTimingSnapshot VideoInterfaceManager::GetParityTimingSnapshot(u64 current_ticks) const
 {
   ParityTimingSnapshot snapshot;
@@ -963,7 +975,10 @@ void VideoInterfaceManager::Update(u64 ticks)
   // in case frame counter display is enabled
 
   if (is_at_field_boundary)
+  {
+    ++m_parity_retrace_count;
     m_system.GetMovie().FrameUpdate();
+  }
 
   // If this half-line is at some boundary of the "active video lines" in either field, we either
   // need to (a) send a request to the GPU thread to actually render the XFB, or (b) increment

@@ -402,6 +402,8 @@ public:
   u32 GetTicksPerHalfLine() const;
   u32 GetTicksPerField() const;
   ParityTimingSnapshot GetParityTimingSnapshot(u64 current_ticks) const;
+  u64 GetParityRetraceCount() const;
+  void ResetParityRetraceOrigin();
 
   // Not adjusted by VBI Clock Override.
   u32 GetNominalTicksPerHalfLine() const;
@@ -459,6 +461,8 @@ private:
   u32 m_target_refresh_rate_denominator = 1;
 
   u64 m_ticks_last_line_start = 0;  // number of ticks when the current full scanline started
+  u64 m_parity_retrace_count = 0;
+  u64 m_parity_retrace_origin = 0;
   u32 m_half_line_count = 0;        // number of halflines that have occurred for this full frame
   u32 m_half_line_of_next_si_poll = 0;  // halfline when next SI poll results should be available
 

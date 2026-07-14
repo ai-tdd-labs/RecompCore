@@ -3,6 +3,7 @@
 
 #include "VideoCommon/FrameDumper.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -417,8 +418,14 @@ void FrameDumper::DumpFrameToImage(const FrameData& frame)
 void FrameDumper::SaveScreenshot(std::string filename)
 {
   std::lock_guard<std::mutex> lk(m_screenshot_lock);
+  m_screenshot_completed.Reset();
   m_screenshot_name = std::move(filename);
   m_screenshot_request.Set();
+}
+
+bool FrameDumper::PollScreenshotCompleted()
+{
+  return m_screenshot_completed.WaitFor(std::chrono::milliseconds(0));
 }
 
 bool FrameDumper::IsFrameDumping() const

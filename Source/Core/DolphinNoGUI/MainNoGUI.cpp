@@ -27,6 +27,7 @@
 #include "Core/DolphinAnalytics.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
 #include "Core/Host.h"
+#include "Core/HW/VideoInterface.h"
 #include "Core/Movie.h"
 #include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -38,6 +39,7 @@
 #include "UICommon/DiscordPresence.h"
 #endif
 #include "UICommon/UICommon.h"
+#include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/VideoEvents.h"
 
 static std::unique_ptr<Platform> s_platform;
@@ -46,6 +48,8 @@ struct AutoFifoCapture
 {
   std::string path;
   u64 start_presented_frame = 0;
+  u64 start_guest_retrace = 0;
+  bool start_guest_retrace_set = false;
   s32 frame_count = 0;
   std::string screenshot_name;
   bool stop_after_capture = false;
@@ -266,6 +270,9 @@ int main(const int argc, char* argv[])
   parser->add_option("--fifo-record-start")
       .action("store")
       .help("Presented frames to skip before automated FIFO recording (default 0)");
+  parser->add_option("--fifo-record-start-retrace")
+      .action("store")
+      .help("Guest VI retrace at which automated FIFO recording starts");
   parser->add_option("--fifo-record-frames")
       .action("store")
       .help("Number of FIFO frames to record");
@@ -287,6 +294,7 @@ int main(const int argc, char* argv[])
   std::optional<AutoFifoCapture> auto_fifo;
   const bool any_fifo_option =
       options.is_set("fifo_record_path") || options.is_set("fifo_record_start") ||
+      options.is_set("fifo_record_start_retrace") ||
       options.is_set("fifo_record_frames") || options.is_set("fifo_record_stop") ||
       options.is_set("fifo_record_screenshot_name");
   if (any_fifo_option)
@@ -299,8 +307,15 @@ int main(const int argc, char* argv[])
     AutoFifoCapture capture;
     capture.path = static_cast<const char*>(options.get("fifo_record_path"));
     u32 frame_count = 0;
+    if (options.is_set("fifo_record_start") && options.is_set("fifo_record_start_retrace"))
+    {
+      fprintf(stderr, "--fifo-record-start and --fifo-record-start-retrace are exclusive\n");
+      return 1;
+    }
+    capture.start_guest_retrace_set = options.is_set("fifo_record_start_retrace");
     if (capture.path.empty() ||
         !ParseUnsignedOption(options, "fifo_record_start", &capture.start_presented_frame) ||
+        !ParseUnsignedOption(options, "fifo_record_start_retrace", &capture.start_guest_retrace) ||
         !ParseUnsignedOption(options, "fifo_record_frames", &frame_count) || frame_count == 0 ||
         frame_count > static_cast<u32>(std::numeric_limits<s32>::max()))
     {
@@ -458,11 +473,13 @@ int main(const int argc, char* argv[])
   }
 
   Common::EventHook auto_fifo_hook;
+  Common::EventHook auto_fifo_retrace_hook;
   u64 presented_frames = 0;
   std::atomic<u32> auto_fifo_stop_delay = 0;
   std::atomic<bool> auto_fifo_started = false;
   std::atomic<bool> auto_fifo_start_queued = false;
-  std::atomic<bool> parity_interpreter_switched = false;
+  std::atomic<bool> parity_interpreter_switch_requested = false;
+  std::atomic<bool> parity_interpreter_switch_completed = false;
   if (auto_fifo)
   {
     const AutoFifoCapture capture = *auto_fifo;
@@ -471,37 +488,52 @@ int main(const int argc, char* argv[])
       return raw ? std::strtoull(raw, nullptr, 0) : 0;
     }();
     fprintf(stderr,
-            "[auto-fifo] armed path=%s start_presented=%llu frames=%d screenshot=%s stop=%d\n",
+            "[auto-fifo] armed path=%s start_presented=%llu start_retrace_set=%d "
+            "start_retrace=%llu "
+            "frames=%d screenshot=%s stop=%d\n",
             capture.path.c_str(), static_cast<unsigned long long>(capture.start_presented_frame),
-            capture.frame_count,
+            capture.start_guest_retrace_set ? 1 : 0,
+            static_cast<unsigned long long>(capture.start_guest_retrace), capture.frame_count,
             capture.screenshot_name.empty() ? "<none>" : capture.screenshot_name.c_str(),
             capture.stop_after_capture ? 1 : 0);
 
-    const auto switch_to_parity_interpreter = [&parity_interpreter_switched] {
-      if (parity_interpreter_switched.exchange(true))
+    const char* parity_fast_forward = std::getenv("DOLPHIN_PARITY_FAST_FORWARD");
+    const bool parity_fast_forward_enabled =
+        parity_fast_forward && parity_fast_forward[0] && parity_fast_forward[0] != '0';
+    if (!parity_fast_forward_enabled)
+      parity_interpreter_switch_completed.store(true);
+
+    const auto switch_to_parity_interpreter =
+        [&parity_interpreter_switch_requested, &parity_interpreter_switch_completed,
+         parity_fast_forward_enabled] {
+      if (!parity_fast_forward_enabled || parity_interpreter_switch_requested.exchange(true))
         return;
-      const char* parity_fast_forward = std::getenv("DOLPHIN_PARITY_FAST_FORWARD");
-      const bool switch_to_interpreter =
-          parity_fast_forward && parity_fast_forward[0] && parity_fast_forward[0] != '0';
-      if (switch_to_interpreter)
-      {
-        Core::System& system = Core::System::GetInstance();
-        Core::CPUThreadGuard guard(system);
-        system.GetPowerPC().SetMode(PowerPC::CoreMode::Interpreter);
-        Interpreter::ArmParityAllFunctionWindow();
-        fprintf(stderr, "[parity-oracle] fast-forward complete; interpreter window active\n");
-      }
+      Core::System& system = Core::System::GetInstance();
+      Core::CPUThreadGuard guard(system);
+      system.GetPowerPC().SetMode(PowerPC::CoreMode::Interpreter);
+      Interpreter::ArmParityAllFunctionWindow();
+      parity_interpreter_switch_completed.store(true);
+      fprintf(stderr, "[parity-oracle] fast-forward complete; interpreter window active\n");
     };
 
     const auto start_auto_fifo = [&auto_fifo_started, &auto_fifo_stop_delay,
                                   switch_to_parity_interpreter](
-                                     const AutoFifoCapture& pending) {
+                                     const AutoFifoCapture& pending,
+                                     bool ensure_interpreter) {
       if (auto_fifo_started.exchange(true))
         return;
-      switch_to_parity_interpreter();
-      fprintf(stderr, "[auto-fifo] start skipped_presented=%llu frames=%d mode=immediate\n",
+      if (ensure_interpreter)
+        switch_to_parity_interpreter();
+      const u64 actual_retrace = Core::System::GetInstance()
+                                     .GetVideoInterface()
+                                     .GetParityRetraceCount();
+      fprintf(stderr,
+              "[auto-fifo] start skipped_presented=%llu requested_retrace=%s%llu "
+              "actual_retrace=%llu frames=%d mode=immediate\n",
               static_cast<unsigned long long>(pending.start_presented_frame),
-              pending.frame_count);
+              pending.start_guest_retrace_set ? "" : "off:",
+              static_cast<unsigned long long>(pending.start_guest_retrace),
+              static_cast<unsigned long long>(actual_retrace), pending.frame_count);
       Core::System::GetInstance().GetFifoRecorder().StartRecording(
           pending.frame_count,
           [pending, &auto_fifo_stop_delay] {
@@ -518,28 +550,97 @@ int main(const int argc, char* argv[])
               }
               if (pending.stop_after_capture)
               {
-                // Give FrameDumper at least one complete present after the
-                // request before stopping the renderer.
-                auto_fifo_stop_delay.store(pending.screenshot_name.empty() ? 1u : 2u);
+                // Screenshot encoding is asynchronous. The after-frame hook
+                // waits for FrameDumper's completion signal before stopping.
+                auto_fifo_stop_delay.store(1u);
               }
             });
           },
           true);
     };
 
-    if (capture.start_presented_frame == 0)
-      start_auto_fifo(capture);
+    if (!capture.start_guest_retrace_set && capture.start_presented_frame == 0)
+      start_auto_fifo(capture, true);
+
+    if (capture.start_guest_retrace_set)
+    {
+      const u64 armed_retrace = Core::System::GetInstance()
+                                      .GetVideoInterface()
+                                      .GetParityRetraceCount();
+      if (armed_retrace == capture.start_guest_retrace)
+      {
+        auto_fifo_start_queued.store(true);
+        start_auto_fifo(capture, true);
+      }
+      else if (armed_retrace > capture.start_guest_retrace)
+      {
+        auto_fifo_start_queued.store(true);
+        fprintf(stderr,
+                "[auto-fifo] requested guest retrace already passed requested=%llu actual=%llu\n",
+                static_cast<unsigned long long>(capture.start_guest_retrace),
+                static_cast<unsigned long long>(armed_retrace));
+        Core::QueueHostJob([](Core::System& system) { Core::Stop(system); });
+      }
+      auto_fifo_retrace_hook =
+          Core::System::GetInstance().GetVideoEvents().vi_end_field_event.Register(
+              [capture, start_auto_fifo, &auto_fifo_start_queued,
+               &parity_interpreter_switch_completed, parity_fast_forward_enabled,
+               parity_interpreter_lead_frames, switch_to_parity_interpreter] {
+                const u64 current = Core::System::GetInstance()
+                                        .GetVideoInterface()
+                                        .GetParityRetraceCount();
+                if (parity_interpreter_lead_frames != 0 &&
+                    capture.start_guest_retrace > parity_interpreter_lead_frames &&
+                    current == capture.start_guest_retrace - parity_interpreter_lead_frames)
+                {
+                  Core::QueueHostJob([switch_to_parity_interpreter](Core::System&) {
+                    switch_to_parity_interpreter();
+                  });
+                }
+                if (current < capture.start_guest_retrace)
+                  return;
+                if (auto_fifo_start_queued.exchange(true))
+                  return;
+                if (current != capture.start_guest_retrace)
+                {
+                  fprintf(stderr,
+                          "[auto-fifo] missed requested guest retrace=%llu actual=%llu\n",
+                          static_cast<unsigned long long>(capture.start_guest_retrace),
+                          static_cast<unsigned long long>(current));
+                  Core::QueueHostJob([](Core::System& system) { Core::Stop(system); });
+                  return;
+                }
+                if (parity_fast_forward_enabled &&
+                    !parity_interpreter_switch_completed.load())
+                {
+                  fprintf(stderr,
+                          "[auto-fifo] interpreter switch incomplete at guest retrace=%llu\n",
+                          static_cast<unsigned long long>(current));
+                  Core::QueueHostJob([](Core::System& system) { Core::Stop(system); });
+                  return;
+                }
+                // This callback runs on the emulated VI boundary, outside the
+                // after-frame event that FifoRecorder registers against. Arm
+                // the next GX command here so host presentation scheduling
+                // cannot move the selected guest frame between runs.
+                start_auto_fifo(capture, false);
+              });
+    }
 
     auto_fifo_hook = Core::System::GetInstance().GetVideoEvents().after_frame_event.Register(
         [capture, start_auto_fifo, &presented_frames, &auto_fifo_stop_delay,
          &auto_fifo_start_queued, parity_interpreter_lead_frames,
          switch_to_parity_interpreter](const Core::System&) {
           const u32 stop_delay = auto_fifo_stop_delay.load();
-          if (stop_delay != 0 && auto_fifo_stop_delay.fetch_sub(1) == 1)
+          if (stop_delay != 0 &&
+              (capture.screenshot_name.empty() || g_frame_dumper->PollScreenshotCompleted()) &&
+              auto_fifo_stop_delay.fetch_sub(1) == 1)
           {
             Core::QueueHostJob([](Core::System& queued_system) { Core::Stop(queued_system); });
             return;
           }
+          if (capture.start_guest_retrace_set)
+            return;
           const u64 current = presented_frames++;
           if (parity_interpreter_lead_frames != 0 &&
               capture.start_presented_frame > parity_interpreter_lead_frames &&
@@ -560,7 +661,7 @@ int main(const int argc, char* argv[])
           if (!auto_fifo_start_queued.exchange(true))
           {
             Core::QueueHostJob([capture, start_auto_fifo](Core::System&) {
-              start_auto_fifo(capture);
+              start_auto_fifo(capture, true);
             });
           }
         });

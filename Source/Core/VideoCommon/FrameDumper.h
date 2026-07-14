@@ -31,6 +31,7 @@ public:
                         const MathUtil::Rectangle<int>& target_rect, u64 ticks, int frame_number);
 
   void SaveScreenshot(std::string filename);
+  bool PollScreenshotCompleted();
 
   bool IsFrameDumping() const;
   int GetRequiredResolutionLeastCommonMultiple() const;
