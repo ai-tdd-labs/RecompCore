@@ -90,6 +90,16 @@ bool IsCompactParitySystemFamily(const char* family)
 
 struct ParityLockstepConfig
 {
+  struct HistoryEntry
+  {
+    u32 pc = 0;
+    u32 opcode = 0;
+    u32 fpscr = 0;
+    u64 timebase = 0;
+    u64 retrace = 0;
+    u64 draw = 0;
+  };
+
   bool enabled = false;
   bool started = false;
   bool start_lr_set = false;
@@ -101,6 +111,10 @@ struct ParityLockstepConfig
   u32 end_pc = 0;
   u64 limit = 1000;
   u64 emitted = 0;
+  u64 prehistory_limit = 0;
+  size_t prehistory_next = 0;
+  bool prehistory_full = false;
+  std::vector<HistoryEntry> prehistory;
 };
 
 struct ParityStartMemoryPredicate
@@ -519,6 +533,12 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
       if (parsed != 0)
         value.limit = parsed;
     }
+    if (const char* prehistory = std::getenv("DOLPHIN_PARITY_LOCKSTEP_PREHISTORY"))
+    {
+      const u64 parsed = std::strtoull(prehistory, nullptr, 0);
+      value.prehistory_limit = std::min<u64>(parsed, 65536);
+      value.prehistory.reserve(static_cast<size_t>(value.prehistory_limit));
+    }
     value.started = value.start_pc == 0;
     return value;
   }();
@@ -526,13 +546,66 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
     return;
   if (!config.started)
   {
-    if (state.pc != config.start_pc ||
-        (config.start_lr_set && state.spr[SPR_LR] != config.start_lr) ||
-        (config.start_gpr_set &&
-         state.gpr[config.start_gpr_index] != config.start_gpr_value) ||
-        !LockstepStartMemoryMatches(mmu))
+    const bool start_matches =
+        state.pc == config.start_pc &&
+        (!config.start_lr_set || state.spr[SPR_LR] == config.start_lr) &&
+        (!config.start_gpr_set ||
+         state.gpr[config.start_gpr_index] == config.start_gpr_value) &&
+        LockstepStartMemoryMatches(mmu);
+    if (!start_matches)
+    {
+      if (config.prehistory_limit != 0)
+      {
+        ParityLockstepConfig::HistoryEntry entry;
+        entry.pc = state.pc;
+        entry.opcode = mmu.Read<u32>(state.pc);
+        entry.fpscr = state.fpscr.Hex;
+        entry.timebase = system.GetSystemTimers().GetFakeTimeBase();
+        entry.retrace = system.GetVideoInterface().GetParityRetraceCount();
+        entry.draw = OpcodeDecoder::GetParityEventDrawAnchor();
+        if (config.prehistory.size() < config.prehistory_limit)
+        {
+          config.prehistory.push_back(entry);
+        }
+        else
+        {
+          config.prehistory[config.prehistory_next] = entry;
+          config.prehistory_next =
+              (config.prehistory_next + 1) % config.prehistory.size();
+          config.prehistory_full = true;
+        }
+      }
       return;
+    }
     config.started = true;
+
+    std::call_once(s_parity_event_init, InitParityEventFile);
+    if (s_parity_event_file && !config.prehistory.empty())
+    {
+      const size_t count = config.prehistory.size();
+      const size_t oldest = config.prehistory_full ? config.prehistory_next : 0;
+      std::lock_guard lk(s_parity_event_mutex);
+      for (size_t index = 0; index < count; ++index)
+      {
+        const auto& entry = config.prehistory[(oldest + index) % count];
+        const u64 sequence = s_parity_event_sequence.fetch_add(1);
+        std::fprintf(
+            s_parity_event_file,
+            "{\"record\":\"event\",\"sequence\":%llu,\"family\":\"instruction\","
+            "\"action\":\"prehistory\",\"subject\":%u,\"anchor\":{"
+            "\"timebase\":%llu,\"retrace\":%llu,\"copy_epoch\":null,"
+            "\"draw\":%llu},\"data\":{\"opcode\":%u,\"fpscr\":%u,"
+            "\"distance_to_trigger\":%llu}}\n",
+            static_cast<unsigned long long>(sequence), entry.pc,
+            static_cast<unsigned long long>(entry.timebase),
+            static_cast<unsigned long long>(entry.retrace),
+            static_cast<unsigned long long>(entry.draw), entry.opcode, entry.fpscr,
+            static_cast<unsigned long long>(count - index));
+      }
+      std::fflush(s_parity_event_file);
+    }
+    config.prehistory.clear();
+    config.prehistory.shrink_to_fit();
   }
   // A static-recompiler Level-5 slice instruments only the selected guest-PC
   // range.  Apply the same filter in Dolphin so calls into nested functions
