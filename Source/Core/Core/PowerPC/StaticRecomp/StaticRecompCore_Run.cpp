@@ -188,6 +188,12 @@ void StaticRecompCore::Run()
   while (*state_ptr == CPU::State::Running)
   {
     core_timing.Advance();
+    // CoreTiming may have asserted VI, PI, or decrementer state while ending
+    // the previous slice. JIT cores sample those pending external exceptions
+    // before executing the next block; without the same boundary here, the
+    // Nintendo OS idle thread can enable MSR.EE and spin forever without ever
+    // entering its interrupt vector.
+    power_pc.CheckExternalExceptions();
     const std::string current_game_id = SConfig::GetInstance().GetGameID();
     m_module_active = m_module && (current_game_id.empty() || current_game_id == m_module->game_id);
 
