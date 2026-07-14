@@ -45,6 +45,11 @@ add_custom_command(
   COMMENT "Generating module_tables.inc")
 
 file(GLOB CHUNK_SOURCES "${GENERATED_DIR}/chunks/*.c")
+set(MODULE_PATCH_SOURCE "${GENERATED_DIR}/module_patch.c")
+set(MODULE_PATCH_SOURCES)
+if(EXISTS "${MODULE_PATCH_SOURCE}")
+  list(APPEND MODULE_PATCH_SOURCES "${MODULE_PATCH_SOURCE}")
+endif()
 
 add_library(${MODULE_NAME} SHARED
   module_export.c
@@ -54,12 +59,16 @@ add_library(${MODULE_NAME} SHARED
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter_table.c"
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter_float.c"
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter_integer.c"
+  ${MODULE_PATCH_SOURCES}
   ${CHUNK_SOURCES})
 
 set_target_properties(${MODULE_NAME} PROPERTIES PREFIX "" OUTPUT_NAME "${MODULE_NAME}" UNITY_BUILD OFF)
 set_source_files_properties("${MODULE_TABLES}" PROPERTIES HEADER_FILE_ONLY TRUE GENERATED TRUE)
 
 target_compile_definitions(${MODULE_NAME} PRIVATE MODULE_GAME_ID="${GAME_ID}")
+if(MODULE_PATCH_SOURCES)
+  target_compile_definitions(${MODULE_NAME} PRIVATE MODERNGEKKO_HAVE_MODULE_PATCH=1)
+endif()
 
 target_include_directories(${MODULE_NAME} PRIVATE
   "${GENERATED_DIR}"

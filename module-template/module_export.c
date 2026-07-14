@@ -8,8 +8,16 @@
 
 #include "StaticRecompABI.h"
 
+#if defined(MODERNGEKKO_HAVE_MODULE_PATCH)
+int moderngekko_module_patch_dispatch(CPUState* ctx, u32 address);
+#endif
+
 static int chassis_dispatch(CPUState* ctx, u32 address)
 {
+#if defined(MODERNGEKKO_HAVE_MODULE_PATCH)
+    if (moderngekko_module_patch_dispatch(ctx, address))
+        return 1;
+#endif
     return dolrecomp_call(ctx, address);
 }
 
