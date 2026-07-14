@@ -89,12 +89,29 @@ void StaticRecompLockstepVerifier::Init()
         ++p;
     }
   }
+  if (const char* s = std::getenv("STATICRECOMP_LOCKSTEP_ONLY"))
+  {
+    const char* p = s;
+    while (*p)
+    {
+      char* end = nullptr;
+      const unsigned long long pc = std::strtoull(p, &end, 0);
+      if (end == p)
+        break;
+      m_ls_only.insert(static_cast<u32>(pc));
+      p = end;
+      while (*p == ',' || *p == ' ')
+        ++p;
+    }
+  }
 
   std::fprintf(
       stderr,
-      "[lockstep] ENABLED: start=%llu limit=%llu maxreport=%llu stepcap=%d whitelist=%zu\n",
+      "[lockstep] ENABLED: start=%llu limit=%llu maxreport=%llu stepcap=%d "
+      "whitelist=%zu only=%zu\n",
       (unsigned long long)m_ls_start, (unsigned long long)m_ls_limit,
-      (unsigned long long)m_ls_max_report, m_ls_step_cap, m_ls_whitelist.size());
+      (unsigned long long)m_ls_max_report, m_ls_step_cap, m_ls_whitelist.size(),
+      m_ls_only.size());
 }
 
 bool StaticRecompLockstepVerifier::ShouldCheck(u32 address) const
@@ -102,6 +119,8 @@ bool StaticRecompLockstepVerifier::ShouldCheck(u32 address) const
   if (!m_lockstep)
     return false;
   if (!LockstepWindowOpen())
+    return false;
+  if (!m_ls_only.empty() && m_ls_only.find(address) == m_ls_only.end())
     return false;
   return m_ls_checked.find(address) == m_ls_checked.end();
 }

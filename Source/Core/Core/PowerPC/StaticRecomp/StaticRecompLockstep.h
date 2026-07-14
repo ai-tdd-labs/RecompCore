@@ -155,6 +155,7 @@ private:
   SetMemJournalFn m_set_mem_journal = nullptr;  // resolved from the module
   std::unordered_set<u32> m_ls_checked;    // entry PCs already checked (dedupe)
   std::unordered_set<u32> m_ls_whitelist;  // entry PCs never reported (known-benign)
+  std::unordered_set<u32> m_ls_only;       // when non-empty, check only these entry PCs
   u32 m_ls_trace_pc = 0;  // STATICRECOMP_LOCKSTEP_TRACE: per-instr shadow dump for one entry PC
 
   u32 m_ls_entry = 0;

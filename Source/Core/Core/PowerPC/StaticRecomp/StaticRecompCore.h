@@ -31,8 +31,8 @@ class StaticRecompLockstepVerifier;
 }
 
 // Executes statically recompiled per-game native code when the PC is covered by
-// a loaded module; falls back to Dolphin's interpreter for everything else.
-// With no module loaded this core is exactly an interpreter loop.
+// a loaded module. Interpreter fallback is an explicit compatibility policy;
+// strict runtimes stop on the first uncovered PC or unmodeled instruction.
 class StaticRecompCore : public JitBase
 {
 public:
@@ -51,6 +51,8 @@ public:
   void Run() override;
   void SingleStep() override;
   bool IsModuleActive() const;
+  bool HasNativeFallbackViolation() const { return m_native_fallback_violation; }
+  const std::string& GetNativeFallbackViolation() const { return m_native_fallback_message; }
   bool DispatchableAt(u32 address);
   bool FastDispatchableAt(u32 address) const;
 
@@ -94,6 +96,11 @@ private:
   };
 
   void LoadModule();
+  void LoadFunctionSymbols();
+  void TraceFunctionEntry();
+  bool TryHandleNativeLowStub(u32 pc);
+  bool TryHandleNativeOSExceptionVector(u32 pc);
+  void ReportNativeFallbackViolation(const char* kind, u32 pc, u32 raw = 0);
 
   // D4 SMC guard, verify-on-entry model. Every chunk starts Unverified; the
   // first native dispatch into it hashes its guest RAM against the module's
@@ -141,14 +148,32 @@ private:
   StaticRecompModuleSource m_module_source;
   const StaticRecompModuleDesc* m_module = nullptr;
   bool m_module_active = false;
+  bool m_allow_fallback = true;
+  bool m_native_fallback_violation = false;
+  std::string m_native_fallback_message;
   std::unique_ptr<JitBase> m_fallback_jit;
 
   u64 m_native_dispatches = 0;
   u64 m_fallback_steps = 0;
+  u64 m_fallback_entries = 0;
+  u64 m_native_reentries = 0;
+  std::unordered_map<u32, u64> m_fallback_pc_counts;
+  std::unordered_map<u32, u64> m_reentry_pc_counts;
+  std::unordered_map<u32, u64> m_external_irq_counts;
+  std::unordered_map<u32, u64> m_native_pc_samples;
+  u32 m_first_fallback_pc = 0;
+  u32 m_first_native_reentry_pc = 0;
   u64 m_native_exceptions = 0;
   u64 m_hook_fallback_instructions = 0;
+  u64 m_native_shim_instructions = 0;
+  u64 m_native_alias_entries = 0;
   u64 m_bursts = 0;          // SyncIn..SyncOut native runs (diagnostic)
   u64 m_charged_cycles = 0;  // cycles flushed from module charges (diagnostic)
+
+  std::unordered_map<u32, std::string> m_function_symbols;
+  std::string m_trace_function;
+  bool m_trace_all_functions = false;
+  u64 m_traced_function_entries = 0;
 
   // D4 guard state: parallel to m_module->chunk_ranges.
   std::vector<u8> m_chunk_state;

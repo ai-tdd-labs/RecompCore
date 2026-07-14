@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 
 #include "Common/Config/Config.h"
 #include "Common/DynamicLibrary.h"
@@ -13,6 +14,8 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/StaticRecompSettings.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/Host.h"
+#include "Core/HW/CPU.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
 #include "Core/System.h"
 
@@ -108,6 +111,8 @@ void StaticRecompCore::Init()
   std::fprintf(stderr, "[staticrecomp] core init\n");
 
   LoadModule();
+  LoadFunctionSymbols();
+  m_allow_fallback = Config::Get(Config::MAIN_STATICRECOMP_ALLOW_FALLBACK);
   m_idle_pc = Config::Get(Config::MAIN_STATICRECOMP_IDLE_PC);
   m_lockstep_verifier = std::make_unique<StaticRecompLockstep::StaticRecompLockstepVerifier>(*this);
   m_lockstep_verifier->Init();
@@ -121,16 +126,62 @@ void StaticRecompCore::Init()
     m_fallback_jit->Init();
 }
 
+void StaticRecompCore::ReportNativeFallbackViolation(const char* kind, u32 pc, u32 raw)
+{
+  if (m_native_fallback_violation)
+    return;
+
+  m_native_fallback_violation = true;
+  if (raw != 0)
+    m_native_fallback_message =
+        fmt::format("strict native execution stopped: {} at PC 0x{:08X} (raw 0x{:08X})", kind,
+                    pc, raw);
+  else
+    m_native_fallback_message =
+        fmt::format("strict native execution stopped: {} at PC 0x{:08X}", kind, pc);
+
+  std::fprintf(stderr, "[staticrecomp] NATIVE COVERAGE VIOLATION: %s\n",
+               m_native_fallback_message.c_str());
+  ERROR_LOG_FMT(POWERPC, "StaticRecomp: {}", m_native_fallback_message);
+  Host_Message(HostMessageID::WMUserStop);
+  m_system.GetCPU().Break();
+}
+
 void StaticRecompCore::Shutdown()
 {
   g_static_recomp_core = nullptr;
   std::fprintf(stderr,
                "[staticrecomp] shutdown: native=%llu fallback=%llu native_exc=%llu hook_fb=%llu "
-               "smc_failed=%u verifications=%llu reverify_events=%llu\n",
+               "native_shims=%llu native_aliases=%llu "
+               "fallback_entries=%llu native_reentries=%llu first_fallback=0x%08X "
+               "first_reentry=0x%08X smc_failed=%u verifications=%llu reverify_events=%llu "
+               "bursts=%llu charged_cycles=%llu traced_functions=%llu\n",
                (unsigned long long)m_native_dispatches, (unsigned long long)m_fallback_steps,
                (unsigned long long)m_native_exceptions,
-               (unsigned long long)m_hook_fallback_instructions, m_failed_chunks,
-               (unsigned long long)m_verifications, (unsigned long long)m_reverify_events);
+               (unsigned long long)m_hook_fallback_instructions,
+               (unsigned long long)m_native_shim_instructions,
+               (unsigned long long)m_native_alias_entries,
+               (unsigned long long)m_fallback_entries,
+               (unsigned long long)m_native_reentries, m_first_fallback_pc,
+               m_first_native_reentry_pc, m_failed_chunks,
+               (unsigned long long)m_verifications, (unsigned long long)m_reverify_events,
+               (unsigned long long)m_bursts, (unsigned long long)m_charged_cycles,
+               (unsigned long long)m_traced_function_entries);
+  const auto print_top_pcs = [](const char* label, const std::unordered_map<u32, u64>& counts) {
+    std::vector<std::pair<u32, u64>> sorted(counts.begin(), counts.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+      return a.second > b.second;
+    });
+    std::fprintf(stderr, "[staticrecomp] %s:", label);
+    for (size_t i = 0; i < std::min<size_t>(8, sorted.size()); ++i)
+      std::fprintf(stderr, " 0x%08X=%llu", sorted[i].first,
+                   (unsigned long long)sorted[i].second);
+    std::fprintf(stderr, "\n");
+  };
+  print_top_pcs("fallback-pcs", m_fallback_pc_counts);
+  print_top_pcs("reentry-pcs", m_reentry_pc_counts);
+  print_top_pcs("external-irqs(cause&mask)", m_external_irq_counts);
+  print_top_pcs("native-pc-samples(1/1024)", m_native_pc_samples);
   NOTICE_LOG_FMT(POWERPC,
                  "StaticRecomp: shutdown. native_dispatches={} fallback_steps={} "
                  "native_exceptions={} hook_fallback_instructions={} smc_failed_chunks={} "

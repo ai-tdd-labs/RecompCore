@@ -614,6 +614,7 @@ add_library(core
   PowerPC/StaticRecomp/StaticRecompCore_Sync.cpp
   PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp
   PowerPC/StaticRecomp/StaticRecompCore_Run.cpp
+  PowerPC/StaticRecomp/StaticRecompCore_Symbols.cpp
   PowerPC/StaticRecomp/StaticRecompCore.h
   PowerPC/StaticRecomp/StaticRecompModuleSource.h
   PowerPC/StaticRecomp/StaticRecompLockstep.cpp

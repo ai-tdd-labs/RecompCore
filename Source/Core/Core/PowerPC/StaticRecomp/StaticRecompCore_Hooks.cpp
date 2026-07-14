@@ -9,6 +9,7 @@
 #include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompLockstep.h"
 #include "Core/HW/GPFifo.h"
+#include "Core/HW/SystemTimers.h"
 #include "Common/Logging/Log.h"
 
 namespace
@@ -161,14 +162,6 @@ void* StaticRecompCore::HookExternalPointer(CPUState* cpu, u32 ea, u32 size)
 void StaticRecompCore::HookInstructionFallback(CPUState* cpu, u32 raw, u32 cia)
 {
   auto* core = static_cast<StaticRecompCore*>(cpu->external_user_data);
-  ++core->m_hook_fallback_instructions;
-
-  // Lockstep: a block that fell back to the interpreter for an unmodeled
-  // instruction (DMA mtspr, cache op, ...) performed side effects not captured
-  // by the RAM journal / MMIO hooks, so re-running it on the shadow would
-  // double-issue them. Mark it unsafe to differentially check.
-  if (core->m_lockstep_verifier->m_ls_journaling)
-    core->m_lockstep_verifier->m_ls_fallback_seen = true;
 
   auto& system = core->m_system;
   auto& ppc = system.GetPPCState();
@@ -196,9 +189,210 @@ void StaticRecompCore::HookInstructionFallback(CPUState* cpu, u32 raw, u32 cia)
       // here (icbi 4, dcbf/dcbst/dcbi 5); their emitted block cost is zero.
       ppc.downcount -= (xo == 982u) ? 4 : 5;
       cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
       return;
     }
   }
+
+  // HID0 is CPU hardware state, not game code. Model its SDK-visible access
+  // directly so cache initialization remains native. ICFI is self-clearing
+  // and invalidates Dolphin's instruction-cache model exactly as its JIT does.
+  if ((raw >> 26) == 31u && (cpu->msr & 0x4000u) == 0)
+  {
+    const u32 xo = (raw >> 1) & 0x3FFu;
+    const u32 spr = ((raw >> 16) & 0x1Fu) | (((raw >> 11) & 0x1Fu) << 5);
+    const u32 reg = (raw >> 21) & 0x1Fu;
+    if (spr == SPR_HID0 && xo == 339u)
+    {
+      cpu->gpr[reg] = ppc.spr[SPR_HID0];
+      ppc.downcount -= 1;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if (spr == SPR_HID0 && xo == 467u)
+    {
+      ppc.spr[SPR_HID0] = cpu->gpr[reg];
+      if (HID0(ppc).ICFI)
+      {
+        HID0(ppc).ICFI = 0;
+        ppc.iCache.Reset(system.GetJitInterface());
+      }
+      ppc.downcount -= 2;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if (spr == SPR_L2CR && xo == 339u)
+    {
+      cpu->gpr[reg] = ppc.spr[SPR_L2CR];
+      ppc.downcount -= 1;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if (spr == SPR_L2CR && xo == 467u)
+    {
+      ppc.spr[SPR_L2CR] = cpu->gpr[reg];
+      ppc.downcount -= 2;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if ((spr == SPR_MMCR0 || spr == SPR_MMCR1) && xo == 339u)
+    {
+      cpu->gpr[reg] = ppc.spr[spr];
+      ppc.downcount -= 1;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if ((spr == SPR_MMCR0 || spr == SPR_MMCR1) && xo == 467u)
+    {
+      ppc.spr[spr] = cpu->gpr[reg];
+      PowerPC::MMCRUpdated(ppc);
+      ppc.downcount -= 2;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    const bool is_pmc = spr == SPR_PMC1 || spr == SPR_PMC2 || spr == SPR_PMC3 ||
+                        spr == SPR_PMC4;
+    if (is_pmc && xo == 339u)
+    {
+      cpu->gpr[reg] = ppc.spr[spr];
+      ppc.downcount -= 1;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if (is_pmc && xo == 467u)
+    {
+      ppc.spr[spr] = cpu->gpr[reg];
+      ppc.downcount -= 2;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    const bool is_ibat = (spr >= SPR_IBAT0U && spr <= SPR_IBAT3L) ||
+                         (spr >= SPR_IBAT4U && spr <= SPR_IBAT7L);
+    const bool is_dbat = (spr >= SPR_DBAT0U && spr <= SPR_DBAT3L) ||
+                         (spr >= SPR_DBAT4U && spr <= SPR_DBAT7L);
+    if ((is_ibat || is_dbat) && xo == 339u)
+    {
+      cpu->gpr[reg] = ppc.spr[spr];
+      ppc.downcount -= 1;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if ((is_ibat || is_dbat) && xo == 467u)
+    {
+      const u32 old_value = ppc.spr[spr];
+      ppc.spr[spr] = cpu->gpr[reg];
+      if (old_value != ppc.spr[spr])
+      {
+        if (is_ibat)
+          system.GetMMU().IBATUpdated();
+        else
+          system.GetMMU().DBATUpdated();
+      }
+      ppc.downcount -= 2;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if (spr == SPR_DEC && xo == 339u)
+    {
+      if ((ppc.spr[SPR_DEC] & 0x80000000u) == 0)
+        ppc.spr[SPR_DEC] = system.GetSystemTimers().GetFakeDecrementer();
+      cpu->gpr[reg] = ppc.spr[SPR_DEC];
+      ppc.downcount -= 1;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if (spr == SPR_DEC && xo == 467u)
+    {
+      const u32 old_value = ppc.spr[SPR_DEC];
+      ppc.spr[SPR_DEC] = cpu->gpr[reg];
+      if ((old_value & 0x80000000u) == 0 && (ppc.spr[SPR_DEC] & 0x80000000u) != 0)
+        ppc.Exceptions |= EXCEPTION_DECREMENTER;
+      system.GetSystemTimers().DecrementerSet();
+      ppc.downcount -= 2;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if (spr == SPR_WPAR && xo == 339u)
+    {
+      if (system.GetGPFifo().IsBNE())
+        ppc.spr[SPR_WPAR] |= 1u;
+      else
+        ppc.spr[SPR_WPAR] &= ~1u;
+      cpu->gpr[reg] = ppc.spr[SPR_WPAR];
+      ppc.downcount -= 1;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if (spr == SPR_WPAR && xo == 467u)
+    {
+      ppc.spr[SPR_WPAR] = cpu->gpr[reg];
+      system.GetGPFifo().ResetGatherPipe();
+      ppc.downcount -= 2;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if ((spr == SPR_DMAU || spr == SPR_DMAL) && xo == 339u)
+    {
+      cpu->gpr[reg] = ppc.spr[spr];
+      ppc.downcount -= 1;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+    if ((spr == SPR_DMAU || spr == SPR_DMAL) && xo == 467u)
+    {
+      ppc.spr[spr] = cpu->gpr[reg];
+      if (spr == SPR_DMAL)
+      {
+        if (DMAL(ppc).DMA_T)
+        {
+          const u32 mem_address = DMAU(ppc).MEM_ADDR << 5;
+          const u32 cache_address = DMAL(ppc).LC_ADDR << 5;
+          u32 length = (DMAU(ppc).DMA_LEN_U << 2) | DMAL(ppc).DMA_LEN_L;
+          if (length == 0)
+            length = 128;
+          if (DMAL(ppc).DMA_LD)
+            system.GetMMU().DMA_MemoryToLC(cache_address, mem_address, length);
+          else
+            system.GetMMU().DMA_LCToMemory(mem_address, cache_address, length);
+        }
+        DMAL(ppc).DMA_T = 0;
+      }
+      ppc.downcount -= 2;
+      cpu->pc = cia + 4u;
+      ++core->m_native_shim_instructions;
+      return;
+    }
+  }
+
+  if (!core->m_allow_fallback)
+  {
+    cpu->pc = cia;
+    core->ReportNativeFallbackViolation("unmodeled instruction", cia, raw);
+    return;
+  }
+
+  ++core->m_hook_fallback_instructions;
+
+  // Lockstep: a block that fell back to the interpreter for an unmodeled
+  // instruction performed side effects not captured by the RAM journal /
+  // MMIO hooks, so re-running it on the shadow would double-issue them.
+  if (core->m_lockstep_verifier->m_ls_journaling)
+    core->m_lockstep_verifier->m_ls_fallback_seen = true;
 
   // The recompiled segment resumes via the dispatcher at the PC this leaves
   // behind, so this must execute exactly the instruction at cia via

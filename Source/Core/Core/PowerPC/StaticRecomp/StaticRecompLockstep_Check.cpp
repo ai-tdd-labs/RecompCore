@@ -38,13 +38,13 @@ bool LsIsLoopHeader(const u8* ram, u32 ram_size, u32 end_pc)
     const u32 addr = end_pc + i * 4u;
     if (addr <= end_pc)
       continue;
-    if (opcd == 16u && (insn & 0x2u) == 0u)  // bc: B-form, 14-bit signed BD, AA=0
+    if (opcd == 16u && (insn & 0x3u) == 0u)  // bc: relative, non-link back-edge
     {
       const s32 bd = static_cast<s32>(static_cast<s16>(insn & 0xFFFCu));
       if (addr + static_cast<u32>(bd) == end_pc)
         return true;
     }
-    else if (opcd == 18u && (insn & 0x2u) == 0u)  // b: I-form, 24-bit signed LI, AA=0
+    else if (opcd == 18u && (insn & 0x3u) == 0u)  // b: relative, non-link back-edge
     {
       s32 li = static_cast<s32>(insn & 0x03FFFFFCu);
       if (li & 0x02000000)
@@ -176,7 +176,27 @@ void StaticRecompLockstepVerifier::LockstepCheck(u32 entry_pc, u32 end_pc, const
                    ppc.GetXER().Hex, ppc.cr.Get(), ppc.spr[SPR_LR], ppc.spr[SPR_CTR]);
     }
     if (ppc.pc == end_pc)
-      break;
+    {
+      bool arrived_via_link = false;
+      if (before >= 0x80000000u)
+      {
+        const u32 off = before - 0x80000000u;
+        if (off + 4u <= ram_size)
+        {
+          const u32 insn = Common::swap32(&ram[off]);
+          const u32 opcd = insn >> 26;
+          arrived_via_link = (opcd == 16u || opcd == 18u || opcd == 19u) &&
+                             (insn & 1u) != 0u;
+        }
+      }
+      // Native returns at a generated back-edge before executing its target.  A first
+      // fallthrough arrival at a loop header is still inside that dispatch, whereas an
+      // arrival from an instruction above the header is the matching return boundary.
+      // A linked branch is a call boundary even when another function tail-branches to
+      // the same address and makes the target look like a loop header to static scanning.
+      if (arrived_via_link || !end_is_loop_header || before > end_pc)
+        break;
+    }
     if (ppc.Exceptions != 0)
       break;
   }
