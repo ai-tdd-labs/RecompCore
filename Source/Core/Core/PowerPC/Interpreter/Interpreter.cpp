@@ -3,13 +3,14 @@
 
 #include "Core/PowerPC/Interpreter/Interpreter.h"
 
-#include <array>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -91,7 +92,12 @@ struct ParityLockstepConfig
 {
   bool enabled = false;
   bool started = false;
+  bool start_lr_set = false;
+  bool start_gpr_set = false;
   u32 start_pc = 0;
+  u32 start_lr = 0;
+  u32 start_gpr_index = 0;
+  u32 start_gpr_value = 0;
   u32 end_pc = 0;
   u64 limit = 1000;
   u64 emitted = 0;
@@ -444,6 +450,17 @@ void EmitParityRegisterCheckpoint(Core::System& system, PowerPC::PowerPCState& s
                  static_cast<unsigned long long>(ps.PS0AsU64()),
                  static_cast<unsigned long long>(ps.PS1AsU64()));
   }
+  std::fputs("],\"fpr_logical\":[", s_parity_event_file);
+  for (size_t index = 0; index < std::size(state.ps); ++index)
+  {
+    const auto& ps = state.ps[index];
+    std::fprintf(s_parity_event_file, "%s[%llu,%llu]", index ? "," : "",
+                 static_cast<unsigned long long>(ps.PS0AsU64()),
+                 static_cast<unsigned long long>(ps.PS1AsU64()));
+  }
+  std::fputs("],\"fpr_valid\":[", s_parity_event_file);
+  for (size_t index = 0; index < std::size(state.ps); ++index)
+    std::fprintf(s_parity_event_file, "%s[1,1]", index ? "," : "");
   std::fprintf(s_parity_event_file,
                "],\"cr\":%u,\"lr\":%u,\"ctr\":%u,\"xer\":%u,\"fpscr\":%u,"
                "\"gqr\":[",
@@ -470,6 +487,26 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
     value.enabled = true;
     if (const char* start = std::getenv("DOLPHIN_PARITY_LOCKSTEP_START_PC"))
       value.start_pc = static_cast<u32>(std::strtoul(start, nullptr, 0));
+    if (const char* start_lr = std::getenv("DOLPHIN_PARITY_LOCKSTEP_START_LR"))
+    {
+      value.start_lr_set = start_lr[0] != '\0';
+      value.start_lr = static_cast<u32>(std::strtoul(start_lr, nullptr, 0));
+    }
+    if (const char* start_gpr = std::getenv("DOLPHIN_PARITY_LOCKSTEP_START_GPR"))
+    {
+      char* end = nullptr;
+      const u32 index = static_cast<u32>(std::strtoul(start_gpr, &end, 0));
+      if (end && *end == ':' && index < 32)
+      {
+        const u32 expected = static_cast<u32>(std::strtoul(end + 1, &end, 0));
+        if (end && *end == '\0')
+        {
+          value.start_gpr_set = true;
+          value.start_gpr_index = index;
+          value.start_gpr_value = expected;
+        }
+      }
+    }
     if (const char* end = std::getenv("DOLPHIN_PARITY_LOCKSTEP_END_PC"))
       value.end_pc = static_cast<u32>(std::strtoul(end, nullptr, 0));
     if (const char* limit = std::getenv("DOLPHIN_PARITY_LOCKSTEP_LIMIT"))
@@ -485,7 +522,11 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
     return;
   if (!config.started)
   {
-    if (state.pc != config.start_pc || !LockstepStartMemoryMatches(mmu))
+    if (state.pc != config.start_pc ||
+        (config.start_lr_set && state.spr[SPR_LR] != config.start_lr) ||
+        (config.start_gpr_set &&
+         state.gpr[config.start_gpr_index] != config.start_gpr_value) ||
+        !LockstepStartMemoryMatches(mmu))
       return;
     config.started = true;
   }
@@ -523,6 +564,17 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
                  static_cast<unsigned long long>(ps.PS0AsU64()),
                  static_cast<unsigned long long>(ps.PS1AsU64()));
   }
+  std::fputs("],\"fpr_logical\":[", s_parity_event_file);
+  for (size_t index = 0; index < std::size(state.ps); ++index)
+  {
+    const auto& ps = state.ps[index];
+    std::fprintf(s_parity_event_file, "%s[%llu,%llu]", index ? "," : "",
+                 static_cast<unsigned long long>(ps.PS0AsU64()),
+                 static_cast<unsigned long long>(ps.PS1AsU64()));
+  }
+  std::fputs("],\"fpr_valid\":[", s_parity_event_file);
+  for (size_t index = 0; index < std::size(state.ps); ++index)
+    std::fprintf(s_parity_event_file, "%s[1,1]", index ? "," : "");
   std::fprintf(s_parity_event_file,
                "],\"cr\":%u,\"lr\":%u,\"ctr\":%u,\"xer\":%u,\"fpscr\":%u,"
                "\"gqr\":[",
@@ -544,6 +596,26 @@ void TraceParityFloatingPoint(Core::System& system, PowerPC::PowerPCState& state
     const char* raw = std::getenv("DOLPHIN_PARITY_LOCKSTEP_START_PC");
     return raw ? static_cast<u32>(std::strtoul(raw, nullptr, 0)) : 0u;
   }();
+  static const std::optional<u32> start_lr = [] -> std::optional<u32> {
+    const char* raw = std::getenv("DOLPHIN_PARITY_LOCKSTEP_START_LR");
+    if (!raw || !raw[0])
+      return std::nullopt;
+    return static_cast<u32>(std::strtoul(raw, nullptr, 0));
+  }();
+  static const std::optional<std::array<u32, 2>> start_gpr =
+      [] -> std::optional<std::array<u32, 2>> {
+    const char* raw = std::getenv("DOLPHIN_PARITY_LOCKSTEP_START_GPR");
+    if (!raw || !raw[0])
+      return std::nullopt;
+    char* end = nullptr;
+    const u32 index = static_cast<u32>(std::strtoul(raw, &end, 0));
+    if (!end || *end != ':' || index >= 32)
+      return std::nullopt;
+    const u32 value = static_cast<u32>(std::strtoul(end + 1, &end, 0));
+    if (!end || *end != '\0')
+      return std::nullopt;
+    return std::array<u32, 2>{index, value};
+  }();
   static const u64 limit = [] {
     const char* raw = std::getenv("DOLPHIN_PARITY_LOCKSTEP_LIMIT");
     const u64 parsed = raw ? std::strtoull(raw, nullptr, 0) : 0;
@@ -553,7 +625,10 @@ void TraceParityFloatingPoint(Core::System& system, PowerPC::PowerPCState& state
   static u64 observed = 0;
   if (!started)
   {
-    if (state.pc != start_pc || !LockstepStartMemoryMatches(mmu))
+    if (state.pc != start_pc ||
+        (start_lr && state.spr[SPR_LR] != *start_lr) ||
+        (start_gpr && state.gpr[(*start_gpr)[0]] != (*start_gpr)[1]) ||
+        !LockstepStartMemoryMatches(mmu))
       return;
     started = true;
   }
