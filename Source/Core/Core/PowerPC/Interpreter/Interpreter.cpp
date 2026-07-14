@@ -97,6 +97,49 @@ struct ParityLockstepConfig
   u64 emitted = 0;
 };
 
+struct ParityStartMemoryPredicate
+{
+  bool enabled = false;
+  u32 address = 0;
+  u32 size = 0;
+  u32 value = 0;
+};
+
+const ParityStartMemoryPredicate& LockstepStartMemoryPredicate()
+{
+  static const ParityStartMemoryPredicate predicate = [] {
+    ParityStartMemoryPredicate out;
+    const char* raw = std::getenv("DOLPHIN_PARITY_LOCKSTEP_START_MEMORY");
+    if (!raw || !raw[0])
+      return out;
+    char* end = nullptr;
+    out.address = static_cast<u32>(std::strtoul(raw, &end, 0));
+    if (!end || *end != ':')
+      return ParityStartMemoryPredicate{};
+    out.size = static_cast<u32>(std::strtoul(end + 1, &end, 0));
+    if (!end || *end != ':' || (out.size != 1 && out.size != 2 && out.size != 4))
+      return ParityStartMemoryPredicate{};
+    out.value = static_cast<u32>(std::strtoul(end + 1, &end, 0));
+    if (!end || *end != '\0')
+      return ParityStartMemoryPredicate{};
+    out.enabled = true;
+    return out;
+  }();
+  return predicate;
+}
+
+bool LockstepStartMemoryMatches(PowerPC::MMU& mmu)
+{
+  const ParityStartMemoryPredicate& predicate = LockstepStartMemoryPredicate();
+  if (!predicate.enabled)
+    return true;
+  if (predicate.size == 1)
+    return mmu.Read<u8>(predicate.address) == predicate.value;
+  if (predicate.size == 2)
+    return mmu.Read<u16>(predicate.address) == predicate.value;
+  return mmu.Read<u32>(predicate.address) == predicate.value;
+}
+
 struct ParityRegisterConfig
 {
   struct Target
@@ -404,7 +447,7 @@ void EmitParityRegisterCheckpoint(Core::System& system, PowerPC::PowerPCState& s
   std::fprintf(s_parity_event_file,
                "],\"cr\":%u,\"lr\":%u,\"ctr\":%u,\"xer\":%u,\"fpscr\":%u,"
                "\"gqr\":[",
-               state.cr.Get(), state.spr[SPR_LR], state.spr[SPR_CTR], state.spr[SPR_XER],
+               state.cr.Get(), state.spr[SPR_LR], state.spr[SPR_CTR], state.GetXER().Hex,
                state.fpscr.Hex);
   for (u32 index = 0; index < 8; ++index)
     std::fprintf(s_parity_event_file, "%s%u", index ? "," : "", state.spr[SPR_GQR0 + index]);
@@ -442,7 +485,7 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
     return;
   if (!config.started)
   {
-    if (state.pc != config.start_pc)
+    if (state.pc != config.start_pc || !LockstepStartMemoryMatches(mmu))
       return;
     config.started = true;
   }
@@ -483,7 +526,7 @@ void TraceParityInstruction(Core::System& system, PowerPC::PowerPCState& state,
   std::fprintf(s_parity_event_file,
                "],\"cr\":%u,\"lr\":%u,\"ctr\":%u,\"xer\":%u,\"fpscr\":%u,"
                "\"gqr\":[",
-               state.cr.Get(), state.spr[SPR_LR], state.spr[SPR_CTR], state.spr[SPR_XER],
+               state.cr.Get(), state.spr[SPR_LR], state.spr[SPR_CTR], state.GetXER().Hex,
                state.fpscr.Hex);
   for (u32 index = 0; index < 8; ++index)
     std::fprintf(s_parity_event_file, "%s%u", index ? "," : "", state.spr[SPR_GQR0 + index]);
@@ -510,7 +553,7 @@ void TraceParityFloatingPoint(Core::System& system, PowerPC::PowerPCState& state
   static u64 observed = 0;
   if (!started)
   {
-    if (state.pc != start_pc)
+    if (state.pc != start_pc || !LockstepStartMemoryMatches(mmu))
       return;
     started = true;
   }
@@ -1064,15 +1107,20 @@ void DolphinParityTraceMemoryWrite(Core::System& system, u32 pc, u32 addr,
     out.end = static_cast<u32>(std::max(start, finish));
     return out;
   }();
-  if (ParityCaptureLevel() < 4 || !range.enabled ||
-      !s_parity_fine_window_active.load(std::memory_order_acquire))
+  // An explicit address range is already a hard output bound. Keep this
+  // independent from the instruction checkpoint window so a headless oracle
+  // can switch from JIT shortly before a late FIFO frame and retain only the
+  // causal writes, without first emitting millions of register snapshots.
+  if (ParityCaptureLevel() < 4 || !range.enabled)
     return;
   const u32 guest_addr = addr < 0x10000000u ? addr | 0x80000000u : addr;
   const u64 last = u64{guest_addr} + (size ? size - 1u : 0u);
   if (last < range.start || guest_addr > range.end)
     return;
+  const PowerPCState& state = system.GetPPCState();
   EmitRawParityEvent(system, "memory", "write", guest_addr,
-                     (u64{pc} << 32) | size, value, 0, 0);
+                     (u64{pc} << 32) | size, value, 0,
+                     (u64{state.spr[SPR_LR]} << 32) | state.gpr[1]);
 }
 }  // namespace PowerPC
 
