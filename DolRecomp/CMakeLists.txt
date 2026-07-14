@@ -176,6 +176,19 @@ add_test(NAME codegen_compile
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/codegen_compile.cmake
 )
 
+add_executable(test_branch_codegen
+    tests/test_branch_codegen.c
+    ${DECODER_SRCS}
+    src/frontend/disasm.c
+    src/backend/emitter.c
+    src/backend/emitter_integer.c
+    src/backend/emitter_float.c
+    src/backend/emitter_branch.c
+    src/backend/emitter_system.c
+)
+target_include_directories(test_branch_codegen PRIVATE src)
+add_test(NAME branch_codegen COMMAND test_branch_codegen)
+
 # Emitted-code acceptance differential.
 # Decode + emit each probe through the REAL emitter, run the generated C, and
 # byte-compare the resulting CPU state against real-Gekko expectations (oracle).

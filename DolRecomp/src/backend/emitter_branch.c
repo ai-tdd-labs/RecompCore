@@ -4,9 +4,12 @@
 
 static void emit_dynamic_branch(FILE* out, const PPCInst* inst, const char* target_expr) {
     if (inst->lk) {
+        fprintf(out, "            u32 branch_target = %s;\n", target_expr);
         fprintf(out, "            ctx->lr = 0x%08Xu;\n", inst->address + 4);
+        fprintf(out, "            ctx->pc = branch_target;\n");
+    } else {
+        fprintf(out, "            ctx->pc = %s;\n", target_expr);
     }
-    fprintf(out, "            ctx->pc = %s;\n", target_expr);
     fprintf(out, "            return;\n");
 }
 
