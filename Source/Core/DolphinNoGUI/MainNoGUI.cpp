@@ -28,6 +28,7 @@
 #include "Core/FifoPlayer/FifoRecorder.h"
 #include "Core/Host.h"
 #include "Core/Movie.h"
+#include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
 #include "DiscIO/Enums.h"
@@ -461,9 +462,14 @@ int main(const int argc, char* argv[])
   std::atomic<u32> auto_fifo_stop_delay = 0;
   std::atomic<bool> auto_fifo_started = false;
   std::atomic<bool> auto_fifo_start_queued = false;
+  std::atomic<bool> parity_interpreter_switched = false;
   if (auto_fifo)
   {
     const AutoFifoCapture capture = *auto_fifo;
+    const u64 parity_interpreter_lead_frames = [] {
+      const char* raw = std::getenv("DOLPHIN_PARITY_FAST_FORWARD_LEAD_FRAMES");
+      return raw ? std::strtoull(raw, nullptr, 0) : 0;
+    }();
     fprintf(stderr,
             "[auto-fifo] armed path=%s start_presented=%llu frames=%d screenshot=%s stop=%d\n",
             capture.path.c_str(), static_cast<unsigned long long>(capture.start_presented_frame),
@@ -471,9 +477,8 @@ int main(const int argc, char* argv[])
             capture.screenshot_name.empty() ? "<none>" : capture.screenshot_name.c_str(),
             capture.stop_after_capture ? 1 : 0);
 
-    const auto start_auto_fifo = [&auto_fifo_started,
-                                  &auto_fifo_stop_delay](const AutoFifoCapture& pending) {
-      if (auto_fifo_started.exchange(true))
+    const auto switch_to_parity_interpreter = [&parity_interpreter_switched] {
+      if (parity_interpreter_switched.exchange(true))
         return;
       const char* parity_fast_forward = std::getenv("DOLPHIN_PARITY_FAST_FORWARD");
       const bool switch_to_interpreter =
@@ -483,8 +488,17 @@ int main(const int argc, char* argv[])
         Core::System& system = Core::System::GetInstance();
         Core::CPUThreadGuard guard(system);
         system.GetPowerPC().SetMode(PowerPC::CoreMode::Interpreter);
+        Interpreter::ArmParityAllFunctionWindow();
         fprintf(stderr, "[parity-oracle] fast-forward complete; interpreter window active\n");
       }
+    };
+
+    const auto start_auto_fifo = [&auto_fifo_started, &auto_fifo_stop_delay,
+                                  switch_to_parity_interpreter](
+                                     const AutoFifoCapture& pending) {
+      if (auto_fifo_started.exchange(true))
+        return;
+      switch_to_parity_interpreter();
       fprintf(stderr, "[auto-fifo] start skipped_presented=%llu frames=%d mode=immediate\n",
               static_cast<unsigned long long>(pending.start_presented_frame),
               pending.frame_count);
@@ -518,7 +532,8 @@ int main(const int argc, char* argv[])
 
     auto_fifo_hook = Core::System::GetInstance().GetVideoEvents().after_frame_event.Register(
         [capture, start_auto_fifo, &presented_frames, &auto_fifo_stop_delay,
-         &auto_fifo_start_queued](const Core::System&) {
+         &auto_fifo_start_queued, parity_interpreter_lead_frames,
+         switch_to_parity_interpreter](const Core::System&) {
           const u32 stop_delay = auto_fifo_stop_delay.load();
           if (stop_delay != 0 && auto_fifo_stop_delay.fetch_sub(1) == 1)
           {
@@ -526,6 +541,15 @@ int main(const int argc, char* argv[])
             return;
           }
           const u64 current = presented_frames++;
+          if (parity_interpreter_lead_frames != 0 &&
+              capture.start_presented_frame > parity_interpreter_lead_frames &&
+              current + 1 ==
+                  capture.start_presented_frame - parity_interpreter_lead_frames)
+          {
+            Core::QueueHostJob([switch_to_parity_interpreter](Core::System&) {
+              switch_to_parity_interpreter();
+            });
+          }
           if (capture.start_presented_frame == 0 ||
               current + 1 != capture.start_presented_frame)
             return;

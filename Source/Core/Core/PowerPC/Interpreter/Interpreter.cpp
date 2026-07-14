@@ -45,6 +45,8 @@ std::atomic<u64> s_parity_event_sequence{0};
 std::atomic<bool> s_parity_fine_window_active{false};
 std::unordered_map<std::string, u64> s_parity_kind_counts;
 std::atomic<bool> s_parity_all_function_window_active{false};
+std::atomic<bool> s_parity_all_function_window_consumed{false};
+std::atomic<bool> s_parity_all_function_window_armed{false};
 u32 s_parity_pending_call_target = 0;
 u64 s_parity_all_function_count = 0;
 
@@ -154,7 +156,9 @@ struct ParityAllFunctionConfig
 {
   bool enabled = false;
   bool close_on_first_thread = true;
+  bool start_on_interpreter = false;
   u32 start_pc = 0;
+  u32 start_lr = 0;
   u64 limit = 100000;
 };
 
@@ -167,8 +171,17 @@ const ParityAllFunctionConfig& AllFunctionParityConfig()
     if (const char* raw_close =
             std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_CLOSE_ON_FIRST_THREAD"))
       value.close_on_first_thread = raw_close[0] && raw_close[0] != '0';
+    if (const char* raw_start_on_interpreter =
+            std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_START_ON_INTERPRETER"))
+    {
+      value.start_on_interpreter =
+          raw_start_on_interpreter[0] && raw_start_on_interpreter[0] != '0';
+    }
     if (const char* raw_start = std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_START_PC"))
       value.start_pc = static_cast<u32>(std::strtoul(raw_start, nullptr, 0));
+    if (const char* raw_start_lr =
+            std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_START_LR"))
+      value.start_lr = static_cast<u32>(std::strtoul(raw_start_lr, nullptr, 0));
     if (const char* raw_limit = std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_LIMIT"))
     {
       const u64 parsed = std::strtoull(raw_limit, nullptr, 0);
@@ -312,10 +325,17 @@ void TraceParityAllFunctionEntry(Core::System& system, PowerPC::PowerPCState& st
   // producer-neutral lockstep boundary used by normal comparisons.
   const bool starts_at_selected_fifo =
       config.start_pc == 0 && OpcodeDecoder::g_record_fifo_data;
+  const bool starts_on_interpreter =
+      config.start_pc == 0 && config.start_on_interpreter &&
+      s_parity_all_function_window_armed.load(std::memory_order_acquire);
   if (!s_parity_all_function_window_active.load(std::memory_order_acquire) &&
-      (starts_at_selected_fifo ||
-       (config.start_pc != 0 && state.pc == config.start_pc)))
+      !s_parity_all_function_window_consumed.load(std::memory_order_acquire) &&
+      (starts_at_selected_fifo || starts_on_interpreter ||
+       (config.start_pc != 0 && state.pc == config.start_pc &&
+        (config.start_lr == 0 || state.spr[SPR_LR] == config.start_lr))))
   {
+    s_parity_all_function_window_consumed.store(true, std::memory_order_release);
+    s_parity_all_function_window_armed.store(false, std::memory_order_release);
     s_parity_all_function_window_active.store(true, std::memory_order_release);
     s_parity_all_function_count = 0;
     EmitParityEvent(system, state, mmu, "function", "enter", state.pc,
@@ -1085,9 +1105,19 @@ Interpreter::Interpreter(Core::System& system, PowerPC::PowerPCState& ppc_state,
 
 Interpreter::~Interpreter() = default;
 
+void Interpreter::ArmParityAllFunctionWindow()
+{
+  s_parity_all_function_window_armed.store(true, std::memory_order_release);
+}
+
 void Interpreter::Init()
 {
   m_end_block = false;
+  s_parity_all_function_window_active.store(false, std::memory_order_release);
+  s_parity_all_function_window_consumed.store(false, std::memory_order_release);
+  s_parity_all_function_window_armed.store(false, std::memory_order_release);
+  s_parity_all_function_count = 0;
+  s_parity_pending_call_target = 0;
   // Create the sidecar as soon as the selected CPU core starts. An empty file
   // then means "no configured checkpoint was reached" instead of being
   // indistinguishable from a missing/disabled interpreter probe.

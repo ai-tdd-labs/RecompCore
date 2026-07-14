@@ -41,6 +41,11 @@ public:
   void ClearCache() override;
   const char* GetName() const override;
 
+  // The headless FIFO oracle switches from JIT to the interpreter immediately
+  // before its selected frame. Arm a single bounded function-discovery window
+  // at that transition instead of accidentally tracing early boot setup.
+  static void ArmParityAllFunctionWindow();
+
   static void unknown_instruction(Interpreter& interpreter, UGeckoInstruction inst);
 
   // Branch Instructions
