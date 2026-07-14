@@ -153,6 +153,7 @@ const ParityRegisterConfig& SelectedParityRegisterConfig()
 struct ParityAllFunctionConfig
 {
   bool enabled = false;
+  bool close_on_first_thread = true;
   u32 start_pc = 0;
   u64 limit = 100000;
 };
@@ -163,6 +164,9 @@ const ParityAllFunctionConfig& AllFunctionParityConfig()
     ParityAllFunctionConfig value;
     const char* enabled = std::getenv("DOLPHIN_PARITY_TRACE_ALL_FUNCTIONS");
     value.enabled = enabled && enabled[0] && enabled[0] != '0';
+    if (const char* raw_close =
+            std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_CLOSE_ON_FIRST_THREAD"))
+      value.close_on_first_thread = raw_close[0] && raw_close[0] != '0';
     if (const char* raw_start = std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_START_PC"))
       value.start_pc = static_cast<u32>(std::strtoul(raw_start, nullptr, 0));
     if (const char* raw_limit = std::getenv("DOLPHIN_PARITY_ALL_FUNCTION_LIMIT"))
@@ -301,8 +305,16 @@ void TraceParityAllFunctionEntry(Core::System& system, PowerPC::PowerPCState& st
   if (!config.enabled || ParityCaptureLevel() < 3)
     return;
 
+  // A zero start PC is the discovery mode used for a selected FIFO frame:
+  // open on the first interpreted instruction after recording starts.  This
+  // avoids needing to know a late-frame function address before the oracle
+  // can discover that address.  A non-zero start PC retains the exact
+  // producer-neutral lockstep boundary used by normal comparisons.
+  const bool starts_at_selected_fifo =
+      config.start_pc == 0 && OpcodeDecoder::g_record_fifo_data;
   if (!s_parity_all_function_window_active.load(std::memory_order_acquire) &&
-      config.start_pc != 0 && state.pc == config.start_pc)
+      (starts_at_selected_fifo ||
+       (config.start_pc != 0 && state.pc == config.start_pc)))
   {
     s_parity_all_function_window_active.store(true, std::memory_order_release);
     s_parity_all_function_count = 0;
@@ -795,8 +807,11 @@ void TraceAnimalCrossingParityEvent(Core::System& system, PowerPC::PowerPCState&
   case 0x8007E2BCu:
     EmitParityEvent(system, state, mmu, "thread", "create", state.gpr[3], state.gpr[4],
                     state.gpr[5], state.gpr[8], state.gpr[6]);
-    s_parity_all_function_window_active.store(false, std::memory_order_release);
-    s_parity_pending_call_target = 0;
+    if (AllFunctionParityConfig().close_on_first_thread)
+    {
+      s_parity_all_function_window_active.store(false, std::memory_order_release);
+      s_parity_pending_call_target = 0;
+    }
     break;
   case 0x8007E85Cu:
     EmitParityEvent(system, state, mmu, "thread", "resume_request", state.gpr[3],
