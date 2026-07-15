@@ -257,6 +257,7 @@ void Presenter::SetNextSwapEstimatedTime(u64 ticks, TimePoint host_time)
 
 void Presenter::ProcessFrameDumping(u64 ticks) const
 {
+  g_frame_dumper->PrepareScreenshotForFrame(ticks, static_cast<int>(m_frame_count));
   if (g_frame_dumper->IsFrameDumping() && m_xfb_entry)
   {
     MathUtil::Rectangle<int> target_rect;

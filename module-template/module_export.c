@@ -8,6 +8,22 @@
 
 #include "StaticRecompABI.h"
 
+#include <stdatomic.h>
+
+static atomic_uint s_host_event_id;
+static atomic_ullong s_host_event_timebase;
+
+void moderngekko_module_signal_host_event(CPUState* ctx, u32 event_id)
+{
+    if (!ctx || event_id == 0)
+        return;
+
+    // Publish the id last. The host's acquire exchange then observes the
+    // matching guest timebase without putting anything in the dispatch path.
+    atomic_store_explicit(&s_host_event_timebase, ctx->timebase, memory_order_relaxed);
+    atomic_store_explicit(&s_host_event_id, event_id, memory_order_release);
+}
+
 static int chassis_dispatch(CPUState* ctx, u32 address)
 {
     // Sparse module hooks are compiled into their exact generated PC labels.
@@ -51,4 +67,21 @@ static const StaticRecompModuleDesc s_desc = {
 RECOMP_MODULE_EXPORT const StaticRecompModuleDesc* staticrecomp_get_module(void)
 {
     return &s_desc;
+}
+
+RECOMP_MODULE_EXPORT bool staticrecomp_take_host_event(StaticRecompHostEvent* event)
+{
+    if (!event)
+        return false;
+
+    const u32 id = atomic_exchange_explicit(&s_host_event_id, 0, memory_order_acq_rel);
+    if (id == 0)
+        return false;
+
+    event->id = id;
+    event->reserved = 0;
+    event->guest_timebase =
+        (u64)atomic_load_explicit(&s_host_event_timebase, memory_order_relaxed);
+    event->core_ticks = 0;
+    return true;
 }

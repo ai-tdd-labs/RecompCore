@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "Common/CommonTypes.h"
 #include "Common/Event.h"
 #include "Common/Flag.h"
@@ -31,6 +33,8 @@ public:
                         const MathUtil::Rectangle<int>& target_rect, u64 ticks, int frame_number);
 
   void SaveScreenshot(std::string filename);
+  bool SaveScreenshotOnHostEvent(std::string filename, u32 event_id);
+  void PrepareScreenshotForFrame(u64 ticks, int frame_number);
 
   bool IsFrameDumping() const;
   int GetRequiredResolutionLeastCommonMultiple() const;
@@ -98,6 +102,9 @@ private:
   Common::Event m_screenshot_completed;
   std::mutex m_screenshot_lock;
   std::string m_screenshot_name;
+  std::atomic<u32> m_screenshot_host_event{};
+  std::atomic<u64> m_screenshot_guest_timebase{};
+  std::atomic<u64> m_screenshot_core_ticks{};
 
   Common::EventHook m_frame_end_handle;
 };

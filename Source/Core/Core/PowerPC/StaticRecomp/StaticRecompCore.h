@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -60,6 +61,8 @@ public:
   void Run() override;
   void SingleStep() override;
   bool IsModuleActive() const;
+  bool ArmHostEvent(u32 event_id);
+  bool TakeHostEvent(StaticRecompHostEvent* event);
   // Read on the CPU thread at a VI boundary. This deliberately avoids atomics
   // in the per-dispatch hot path while still giving the frame timeline exact
   // deltas.
@@ -136,6 +139,7 @@ private:
   bool TryHandleNativeLowStub(u32 pc);
   bool TryHandleNativeOSExceptionVector(u32 pc);
   void ReportNativeFallbackViolation(const char* kind, u32 pc, u32 raw = 0);
+  void PollArmedHostEvent(u64 core_ticks);
 
   // D4 SMC guard, verify-on-entry model. Every chunk starts Unverified; the
   // first native dispatch into it hashes its guest RAM against the module's
@@ -182,6 +186,11 @@ private:
   Common::DynamicLibrary m_library;
   StaticRecompModuleSource m_module_source;
   const StaticRecompModuleDesc* m_module = nullptr;
+  StaticRecompTakeHostEventFn m_take_host_event = nullptr;
+  std::atomic<u32> m_armed_host_event{};
+  std::atomic<u32> m_staged_host_event{};
+  std::atomic<u64> m_staged_host_event_guest_timebase{};
+  std::atomic<u64> m_staged_host_event_core_ticks{};
   bool m_module_active = false;
   bool m_allow_fallback = true;
   bool m_native_fallback_violation = false;

@@ -65,6 +65,31 @@ class TemplateDispatchTest(unittest.TestCase):
         self.assertEqual(template.count("dolrecomp_dispatch(ctx, address)"), 1)
         self.assertNotIn("module_patch_dispatch.inc", template)
 
+    def test_host_event_is_optional_and_carries_guest_timebase(self) -> None:
+        template = (Path(__file__).parent / "module_export.c").read_text()
+        self.assertIn("moderngekko_module_signal_host_event", template)
+        self.assertIn("ctx->timebase", template)
+        self.assertIn("event->core_ticks = 0", template)
+        self.assertIn("staticrecomp_take_host_event", template)
+        dispatch = template[template.index("static int chassis_dispatch") :]
+        dispatch = dispatch[: dispatch.index("static void chassis_on_state_loaded")]
+        self.assertNotIn("host_event", dispatch)
+
+    def test_host_event_is_translated_on_cpu_burst_not_presenter_thread(self) -> None:
+        root = Path(__file__).parents[1]
+        core = (
+            root / "Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp"
+        ).read_text()
+        run = (
+            root / "Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Run.cpp"
+        ).read_text()
+        take = core[core.index("bool StaticRecompCore::TakeHostEvent") :]
+        take = take[: take.index("StaticRecompCore::StaticRecompCore")]
+        self.assertIn("m_staged_host_event.exchange", take)
+        self.assertNotIn("m_take_host_event(event)", take)
+        self.assertIn("SyncOut();", run)
+        self.assertIn("PollArmedHostEvent(core_timing.GetTicks())", run)
+
     def test_generated_chunks_offer_a_zero_cost_default_patch_point(self) -> None:
         emitter = (
             Path(__file__).parents[1] / "DolRecomp" / "src" / "backend" / "emitter.c"

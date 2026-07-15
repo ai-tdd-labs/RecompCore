@@ -74,6 +74,26 @@ typedef struct StaticRecompModuleDesc
 typedef const StaticRecompModuleDesc* (*StaticRecompGetModuleFn)(void);
 #define STATICRECOMP_GET_MODULE_SYMBOL "staticrecomp_get_module"
 
+// Optional, probe-only host-event channel. Modules publish the guest timebase
+// for diagnosis; the chassis consumes the marker on the CPU thread and adds
+// comparable CoreTiming ticks so capture cannot race presentation.
+typedef struct StaticRecompHostEvent
+{
+  u32 id;
+  u32 reserved;
+  u64 guest_timebase;
+  // Filled by the chassis after consuming the module event on the CPU
+  // thread. This is in CoreTiming's epoch and can therefore be compared with
+  // the emulated timestamps attached to presented XFBs.
+  u64 core_ticks;
+} StaticRecompHostEvent;
+
+typedef bool (*StaticRecompTakeHostEventFn)(StaticRecompHostEvent* event);
+#define STATICRECOMP_TAKE_HOST_EVENT_SYMBOL "staticrecomp_take_host_event"
+
+// Available to optional per-game module patches linked into the same module.
+void moderngekko_module_signal_host_event(CPUState* ctx, u32 event_id);
+
 #endif  // MODERNGEKKO_MODULE_ABI_H
 
 #ifdef __cplusplus

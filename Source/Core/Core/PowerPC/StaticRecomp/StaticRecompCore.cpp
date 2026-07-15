@@ -81,6 +81,62 @@ bool StaticRecompCore::IsModuleActive() const
   return m_module_active;
 }
 
+bool StaticRecompCore::ArmHostEvent(u32 event_id)
+{
+  if (event_id == 0 || !m_module || !m_take_host_event)
+    return false;
+
+  m_staged_host_event.store(0, std::memory_order_release);
+  m_staged_host_event_guest_timebase.store(0, std::memory_order_relaxed);
+  m_staged_host_event_core_ticks.store(0, std::memory_order_relaxed);
+  m_armed_host_event.store(event_id, std::memory_order_release);
+  return true;
+}
+
+bool StaticRecompCore::TakeHostEvent(StaticRecompHostEvent* event)
+{
+  if (!event)
+    return false;
+
+  const u32 id = m_staged_host_event.exchange(0, std::memory_order_acq_rel);
+  if (id == 0)
+    return false;
+
+  event->id = id;
+  event->reserved = 0;
+  event->guest_timebase =
+      m_staged_host_event_guest_timebase.load(std::memory_order_relaxed);
+  event->core_ticks = m_staged_host_event_core_ticks.load(std::memory_order_relaxed);
+  return true;
+}
+
+void StaticRecompCore::PollArmedHostEvent(u64 core_ticks)
+{
+  const u32 expected = m_armed_host_event.load(std::memory_order_acquire);
+  if (expected == 0 || !m_take_host_event)
+    return;
+
+  StaticRecompHostEvent event{};
+  if (!m_take_host_event(&event))
+    return;
+
+  if (event.id != expected)
+  {
+    std::fprintf(stderr,
+                 "[staticrecomp] ignored module host event=0x%08X expected=0x%08X\n",
+                 event.id, expected);
+    return;
+  }
+
+  u32 armed = expected;
+  if (!m_armed_host_event.compare_exchange_strong(armed, 0, std::memory_order_acq_rel))
+    return;
+
+  m_staged_host_event_guest_timebase.store(event.guest_timebase, std::memory_order_relaxed);
+  m_staged_host_event_core_ticks.store(core_ticks, std::memory_order_relaxed);
+  m_staged_host_event.store(event.id, std::memory_order_release);
+}
+
 StaticRecompCore::StaticRecompCore(Core::System& system, StaticRecompModuleSource module_source)
     : JitBase(system), m_module_source(std::move(module_source))
 {
@@ -91,6 +147,10 @@ StaticRecompCore::~StaticRecompCore() = default;
 void StaticRecompCore::Init()
 {
   g_static_recomp_core = this;
+  m_armed_host_event.store(0, std::memory_order_relaxed);
+  m_staged_host_event.store(0, std::memory_order_relaxed);
+  m_staged_host_event_guest_timebase.store(0, std::memory_order_relaxed);
+  m_staged_host_event_core_ticks.store(0, std::memory_order_relaxed);
   RefreshConfig();
   jo.enableBlocklink = false;
   jo.fastmem = false;
@@ -193,6 +253,7 @@ void StaticRecompCore::Shutdown()
   m_lockstep_verifier.reset();
   m_block_cache.Shutdown();
   m_module = nullptr;
+  m_take_host_event = nullptr;
   if (m_library.IsOpen())
     m_library.Close();
 
@@ -205,6 +266,7 @@ void StaticRecompCore::Shutdown()
 
 void StaticRecompCore::LoadModule()
 {
+  m_take_host_event = nullptr;
   if (m_module_source.kind == StaticRecompModuleSource::Kind::None)
   {
     NOTICE_LOG_FMT(POWERPC, "StaticRecomp: no explicit module source; interpreter-only.");
@@ -233,6 +295,7 @@ void StaticRecompCore::LoadModule()
   const auto reject = [&](const std::string& why) {
     ERROR_LOG_FMT(POWERPC, "StaticRecomp: rejecting module '{}': {}. Interpreter-only.", path, why);
     m_module = nullptr;
+    m_take_host_event = nullptr;
     if (m_library.IsOpen())
       m_library.Close();
   };
@@ -265,6 +328,10 @@ void StaticRecompCore::LoadModule()
     return reject(fmt::format("module game_id '{}' != running game '{}'", desc->game_id, game_id));
 
   m_module = desc;
+  m_take_host_event =
+      m_library.IsOpen() ? reinterpret_cast<StaticRecompTakeHostEventFn>(
+                               m_library.GetSymbolAddress(STATICRECOMP_TAKE_HOST_EVENT_SYMBOL)) :
+                           nullptr;
   m_module_active = (desc != nullptr);
   m_chunk_state.assign(desc->num_chunk_ranges, CHUNK_UNVERIFIED);
   m_failed_chunks = 0;

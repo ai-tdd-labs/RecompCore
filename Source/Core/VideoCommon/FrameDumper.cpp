@@ -3,12 +3,15 @@
 
 #include "VideoCommon/FrameDumper.h"
 
+#include <cstdio>
+
 #include "Common/Assert.h"
 #include "Common/FileUtil.h"
 #include "Common/Image.h"
 
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
 
 #include "VideoCommon/AbstractFramebuffer.h"
 #include "VideoCommon/AbstractGfx.h"
@@ -341,8 +344,79 @@ void FrameDumper::DumpFrameToImage(const FrameData& frame)
 void FrameDumper::SaveScreenshot(std::string filename)
 {
   std::lock_guard<std::mutex> lk(m_screenshot_lock);
+  m_screenshot_host_event.store(0, std::memory_order_release);
+  m_screenshot_guest_timebase.store(0, std::memory_order_relaxed);
+  m_screenshot_core_ticks.store(0, std::memory_order_relaxed);
   m_screenshot_name = std::move(filename);
   m_screenshot_request.Set();
+}
+
+bool FrameDumper::SaveScreenshotOnHostEvent(std::string filename, u32 event_id)
+{
+  std::lock_guard<std::mutex> lk(m_screenshot_lock);
+  if (!g_static_recomp_core || !g_static_recomp_core->ArmHostEvent(event_id))
+    return false;
+
+  m_screenshot_name = std::move(filename);
+  m_screenshot_guest_timebase.store(0, std::memory_order_relaxed);
+  m_screenshot_core_ticks.store(0, std::memory_order_relaxed);
+  m_screenshot_host_event.store(event_id, std::memory_order_release);
+  std::fprintf(stderr, "[moderngekko] screenshot event armed event=0x%08X\n", event_id);
+  return true;
+}
+
+void FrameDumper::PrepareScreenshotForFrame(u64 ticks, int frame_number)
+{
+  const u32 expected_event = m_screenshot_host_event.load(std::memory_order_acquire);
+  if (expected_event == 0)
+    return;
+
+  u64 guest_timebase = m_screenshot_guest_timebase.load(std::memory_order_acquire);
+  u64 core_ticks = m_screenshot_core_ticks.load(std::memory_order_acquire);
+  if (core_ticks == 0 && g_static_recomp_core)
+  {
+    StaticRecompHostEvent event{};
+    if (g_static_recomp_core->TakeHostEvent(&event))
+    {
+      if (event.id != expected_event)
+      {
+        std::fprintf(stderr,
+                     "[moderngekko] screenshot ignored host event=0x%08X expected=0x%08X\n",
+                     event.id, expected_event);
+        return;
+      }
+      guest_timebase = event.guest_timebase;
+      core_ticks = event.core_ticks;
+      m_screenshot_guest_timebase.store(guest_timebase, std::memory_order_release);
+      m_screenshot_core_ticks.store(core_ticks, std::memory_order_release);
+      std::fprintf(stderr,
+                   "[moderngekko] screenshot observed event=0x%08X guest_timebase=%llu "
+                   "core_ticks=%llu\n",
+                   event.id, static_cast<unsigned long long>(guest_timebase),
+                   static_cast<unsigned long long>(core_ticks));
+    }
+  }
+
+  // A presenter call with ticks <= the marker can still belong to an older
+  // XFB executing concurrently. Select the first frame strictly after the
+  // guest checkpoint so host scheduling cannot move A/B capture by a frame.
+  if (core_ticks == 0 || ticks <= core_ticks)
+    return;
+
+  u32 armed_event = expected_event;
+  if (!m_screenshot_host_event.compare_exchange_strong(armed_event, 0,
+                                                        std::memory_order_acq_rel))
+  {
+    return;
+  }
+
+  m_screenshot_request.Set();
+  std::fprintf(stderr,
+               "[moderngekko] screenshot capture event=0x%08X guest_timebase=%llu "
+               "core_ticks=%llu present_ticks=%llu presenter_frame=%d\n",
+               expected_event, static_cast<unsigned long long>(guest_timebase),
+               static_cast<unsigned long long>(core_ticks),
+               static_cast<unsigned long long>(ticks), frame_number);
 }
 
 bool FrameDumper::IsFrameDumping() const

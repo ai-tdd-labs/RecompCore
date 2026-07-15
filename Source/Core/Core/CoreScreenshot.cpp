@@ -69,4 +69,13 @@ void SaveScreenShot(std::string_view name)
   g_frame_dumper->SaveScreenshot(fmt::format("{}{}.png", GenerateScreenshotFolderPath(), name));
 }
 
+bool SaveScreenShotOnHostEvent(std::string_view name, u32 event_id)
+{
+  const Core::CPUThreadGuard guard(Core::System::GetInstance());
+  if (!g_frame_dumper)
+    return false;
+  return g_frame_dumper->SaveScreenshotOnHostEvent(
+      fmt::format("{}{}.png", GenerateScreenshotFolderPath(), name), event_id);
+}
+
 }  // namespace Core

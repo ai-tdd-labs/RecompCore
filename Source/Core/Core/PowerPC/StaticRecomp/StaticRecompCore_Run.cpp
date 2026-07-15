@@ -266,6 +266,12 @@ void StaticRecompCore::Run()
         } while (m_module_active && FastDispatchableAt(m_guest.pc) && ppc.downcount > 0 &&
                  *state_ptr == CPU::State::Running);
         SyncOut();
+        // Probe-only event translation. The module's guest timebase includes
+        // the emulated wall-clock epoch, whereas XFB timestamps use
+        // CoreTiming ticks. Consume only while explicitly armed and attach a
+        // same-domain timestamp at this CPU burst boundary.
+        if (m_armed_host_event.load(std::memory_order_relaxed) != 0)
+          PollArmedHostEvent(core_timing.GetTicks());
         if ((ppc.Exceptions & SYNC_EXCEPTION_MASK) != 0)
           power_pc.CheckExceptions();
       }
