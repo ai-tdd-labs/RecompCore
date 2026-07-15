@@ -73,13 +73,14 @@ public:
   bool HasNativeFallbackViolation() const { return m_native_fallback_violation; }
   const std::string& GetNativeFallbackViolation() const { return m_native_fallback_message; }
   bool DispatchableAt(u32 address);
+  int DispatchableChunkAt(u32 address);
   // This is the dispatcher back-edge hot path. Keep the complete lookup in
   // the header so release builds can fold it into Run() instead of paying a
   // function call and repeating the chunk-index helper on every native block.
-  bool FastDispatchableAt(u32 address) const
+  int FastDispatchableChunkAt(u32 address) const
   {
     if (!m_module_active || m_chunk_lookup_table.empty())
-      return false;
+      return -1;
 
     int lookup_index = -1;
     if (address >= 0x80000000u && address < 0x80000000u + m_lookup_ram_size)
@@ -89,9 +90,13 @@ public:
           static_cast<int>((m_lookup_ram_size >> 2) + ((address - 0x90000000u) >> 2));
 
     if (lookup_index < 0 || lookup_index >= static_cast<int>(m_chunk_lookup_table.size()))
-      return false;
+      return -1;
     const int chunk_index = m_chunk_lookup_table[lookup_index];
-    return chunk_index >= 0 && m_chunk_state[chunk_index] == CHUNK_VERIFIED;
+    return chunk_index >= 0 && m_chunk_state[chunk_index] == CHUNK_VERIFIED ? chunk_index : -1;
+  }
+  bool FastDispatchableAt(u32 address) const
+  {
+    return FastDispatchableChunkAt(address) >= 0;
   }
 
   void ClearCache() override;
@@ -193,6 +198,9 @@ private:
   std::atomic<u64> m_staged_host_event_core_ticks{};
   bool m_module_active = false;
   bool m_allow_fallback = true;
+  // Benchmark-only A/B switch. Production defaults to direct verified chunk
+  // entry; the generic ABI dispatcher remains available as an exact baseline.
+  bool m_use_generic_module_dispatch = false;
   bool m_native_fallback_violation = false;
   std::string m_native_fallback_message;
   std::unique_ptr<JitBase> m_fallback_jit;

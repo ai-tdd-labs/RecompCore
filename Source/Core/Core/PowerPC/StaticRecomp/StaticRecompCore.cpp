@@ -4,6 +4,7 @@
 #include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <algorithm>
 
@@ -56,7 +57,8 @@ bool AddressIsCovered(const StaticRecompRange* ranges, u32 count, u32 address)
 
 bool ChunksTileCode(const StaticRecompModuleDesc& desc)
 {
-  if (!RangesAreSorted(desc.chunk_ranges, desc.num_chunk_ranges) || !desc.chunk_hashes)
+  if (!RangesAreSorted(desc.chunk_ranges, desc.num_chunk_ranges) || !desc.chunk_hashes ||
+      !desc.chunk_functions)
     return false;
   u32 chunk = 0;
   for (u32 code = 0; code < desc.num_code_ranges; ++code)
@@ -65,7 +67,8 @@ bool ChunksTileCode(const StaticRecompModuleDesc& desc)
     while (chunk < desc.num_chunk_ranges && desc.chunk_ranges[chunk].start < desc.code_ranges[code].end)
     {
       if (desc.chunk_ranges[chunk].start != cursor ||
-          desc.chunk_ranges[chunk].end > desc.code_ranges[code].end)
+          desc.chunk_ranges[chunk].end > desc.code_ranges[code].end ||
+          desc.chunk_functions[chunk] == nullptr)
         return false;
       cursor = desc.chunk_ranges[chunk++].end;
     }
@@ -174,14 +177,26 @@ void StaticRecompCore::Init()
   LoadFunctionSymbols();
   m_allow_fallback = Config::Get(Config::MAIN_STATICRECOMP_ALLOW_FALLBACK);
   m_idle_pc = Config::Get(Config::MAIN_STATICRECOMP_IDLE_PC);
+  const char* module_dispatch = std::getenv("STATICRECOMP_MODULE_DISPATCH");
+  m_use_generic_module_dispatch =
+      module_dispatch != nullptr && std::strcmp(module_dispatch, "generic") == 0;
+  std::fprintf(stderr, "[staticrecomp] module dispatch=%s\n",
+               m_use_generic_module_dispatch ? "generic" : "direct-chunk");
   m_lockstep_verifier = std::make_unique<StaticRecompLockstep::StaticRecompLockstepVerifier>(*this);
   m_lockstep_verifier->Init();
 
+  // Strict-native runs never execute the compatibility JIT. Constructing it
+  // anyway reserves a large code cache, and Dolphin cache invalidations then
+  // spend time poisoning that unused memory on the CPU/GPU thread. Keep the
+  // JIT only for the explicit --allow-fallback diagnostic mode.
+  if (m_allow_fallback)
+  {
 #ifdef _M_ARM_64
-  m_fallback_jit = std::make_unique<JitArm64>(m_system);
+    m_fallback_jit = std::make_unique<JitArm64>(m_system);
 #elif defined(_M_X86_64)
-  m_fallback_jit = std::make_unique<Jit64>(m_system);
+    m_fallback_jit = std::make_unique<Jit64>(m_system);
 #endif
+  }
   if (m_fallback_jit)
     m_fallback_jit->Init();
 }
@@ -318,8 +333,9 @@ void StaticRecompCore::LoadModule()
     return reject("malformed or overlapping code ranges");
   if (desc->num_smc_ranges != 0 && !RangesAreSorted(desc->smc_ranges, desc->num_smc_ranges))
     return reject("malformed or overlapping SMC ranges");
-  if (!desc->chunk_ranges || desc->num_chunk_ranges == 0 || !desc->chunk_hashes)
-    return reject("no chunk ranges/hashes (required for the SMC guard)");
+  if (!desc->chunk_ranges || desc->num_chunk_ranges == 0 || !desc->chunk_hashes ||
+      !desc->chunk_functions)
+    return reject("no chunk ranges/hashes/functions (required for direct verified dispatch)");
   if (!ChunksTileCode(*desc))
     return reject("chunk ranges do not exactly tile code ranges");
   if (!AddressIsCovered(desc->code_ranges, desc->num_code_ranges, desc->entry_point))

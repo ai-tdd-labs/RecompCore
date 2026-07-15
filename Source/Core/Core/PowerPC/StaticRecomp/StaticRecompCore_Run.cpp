@@ -174,15 +174,18 @@ void StaticRecompCore::Run()
   const std::string initial_game_id = SConfig::GetInstance().GetGameID();
   m_module_active = m_module && (initial_game_id.empty() || initial_game_id == m_module->game_id);
 
-  if (!m_module_active && m_fallback_jit)
+  if (!m_module_active)
   {
     if (!m_allow_fallback)
     {
       ReportNativeFallbackViolation("native module inactive", ppc.pc);
       return;
     }
-    m_fallback_jit->Run();
-    return;
+    if (m_fallback_jit)
+    {
+      m_fallback_jit->Run();
+      return;
+    }
   }
 
   // Oracle features are immutable for a run. Do not call their cold helpers
@@ -201,12 +204,18 @@ void StaticRecompCore::Run()
     power_pc.CheckExternalExceptions();
     const std::string current_game_id = SConfig::GetInstance().GetGameID();
     m_module_active = m_module && (current_game_id.empty() || current_game_id == m_module->game_id);
+    if (!m_module_active && !m_allow_fallback)
+    {
+      ReportNativeFallbackViolation("native module inactive", ppc.pc);
+      return;
+    }
+    int native_chunk_index = -1;
 
     do
     {
       // MSR.FP needs no gate here: generated FPU instructions raise the
       // FP-unavailable exception themselves (ppc_fp_available).
-      if (m_module_active && DispatchableAt(ppc.pc))
+      if (m_module_active && (native_chunk_index = DispatchableChunkAt(ppc.pc)) >= 0)
       {
         SyncIn();
         ++m_bursts;
@@ -220,7 +229,13 @@ void StaticRecompCore::Run()
             m_lockstep_verifier->Prepare(m_guest);
           }
 
-          m_module->dispatch(&m_guest, m_guest.pc);
+          // The chassis lookup already resolved and SMC-verified this chunk.
+          // Enter it directly instead of asking the module dispatcher to map
+          // the same guest address a second time.
+          if (m_use_generic_module_dispatch)
+            m_module->dispatch(&m_guest, m_guest.pc);
+          else
+            m_module->chunk_functions[native_chunk_index](&m_guest);
           ++m_native_dispatches;
           if ((m_native_dispatches & 0x3FFu) == 0u)
             ++m_native_pc_samples[m_guest.pc];
@@ -263,8 +278,9 @@ void StaticRecompCore::Run()
           }
           if ((ppc.Exceptions & SYNC_EXCEPTION_MASK) != 0)
             break;  // Hook-raised synchronous exception: deliver via Dolphin below.
-        } while (m_module_active && FastDispatchableAt(m_guest.pc) && ppc.downcount > 0 &&
-                 *state_ptr == CPU::State::Running);
+        } while (m_module_active &&
+                 (native_chunk_index = FastDispatchableChunkAt(m_guest.pc)) >= 0 &&
+                 ppc.downcount > 0 && *state_ptr == CPU::State::Running);
         SyncOut();
         // Probe-only event translation. The module's guest timebase includes
         // the emulated wall-clock epoch, whereas XFB timestamps use

@@ -24,13 +24,15 @@ extern "C" {
 
 #ifndef MODERNGEKKO_MODULE_ABI_H
 
-#define STATICRECOMP_ABI_VERSION 2u
+#define STATICRECOMP_ABI_VERSION 3u
 
 typedef struct StaticRecompRange
 {
   u32 start;  // guest effective address, inclusive
   u32 end;    // guest effective address, exclusive
 } StaticRecompRange;
+
+typedef void (*StaticRecompChunkFn)(CPUState* ctx);
 
 typedef struct StaticRecompModuleDesc
 {
@@ -67,6 +69,11 @@ typedef struct StaticRecompModuleDesc
   const StaticRecompRange* chunk_ranges;
   u32 num_chunk_ranges;
   const u64* chunk_hashes;
+
+  // Direct entry point for each chunk_range, in the same order. The chassis
+  // has already resolved and verified the chunk before execution, so this
+  // avoids repeating the module's address-to-chunk dispatch on every block.
+  const StaticRecompChunkFn* chunk_functions;
 } StaticRecompModuleDesc;
 
 // The single symbol a module must export:

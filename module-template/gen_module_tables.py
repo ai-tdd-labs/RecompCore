@@ -124,6 +124,10 @@ def main() -> int:
         for a, b in chunk_ranges:
             f.write(f"    0x{fnv1a64(read_range(a, b)):016X}u,\n")
         f.write("};\n")
+        f.write("static const StaticRecompChunkFn s_chunk_functions[] = {\n")
+        for addr in func_addrs:
+            f.write(f"    func_{addr:08X},\n")
+        f.write("};\n")
     print(
         f"module_tables.inc: {len(code_ranges)} code ranges, "
         f"{len(smc_ranges)} smc ranges, {len(chunk_ranges)} chunk ranges (hashed)"
