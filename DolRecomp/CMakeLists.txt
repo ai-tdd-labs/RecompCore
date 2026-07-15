@@ -189,6 +189,19 @@ add_executable(test_branch_codegen
 target_include_directories(test_branch_codegen PRIVATE src)
 add_test(NAME branch_codegen COMMAND test_branch_codegen)
 
+add_executable(test_fpu_codegen
+    tests/test_fpu_codegen.c
+    ${DECODER_SRCS}
+    src/frontend/disasm.c
+    src/backend/emitter.c
+    src/backend/emitter_integer.c
+    src/backend/emitter_float.c
+    src/backend/emitter_branch.c
+    src/backend/emitter_system.c
+)
+target_include_directories(test_fpu_codegen PRIVATE src)
+add_test(NAME fpu_codegen COMMAND test_fpu_codegen)
+
 # Emitted-code acceptance differential.
 # Decode + emit each probe through the REAL emitter, run the generated C, and
 # byte-compare the resulting CPU state against real-Gekko expectations (oracle).

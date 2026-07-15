@@ -398,7 +398,14 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
     }
 
     if (ppc_op_uses_fpu(inst->op)) {
-        fprintf(out, "    if (!ppc_fp_available(ctx, 0x%08Xu)) return;\n", inst->address);
+        /* MSR[FP] is enabled throughout ordinary game code. Keep that hot path
+         * local to the generated function, while preserving the lazy-FP
+         * exception/eager-host policy in ppc_fp_available for the uncommon
+         * disabled case. */
+        fprintf(out,
+                "    if ((ctx->msr & PPC_MSR_FP) == 0 && "
+                "!ppc_fp_available(ctx, 0x%08Xu)) return;\n",
+                inst->address);
     }
 
     if (emit_integer_instruction(out, inst, func_start, func_end)) return;
