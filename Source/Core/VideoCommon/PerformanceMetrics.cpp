@@ -4,6 +4,10 @@
 #include "VideoCommon/PerformanceMetrics.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <iomanip>
+#include <sstream>
 
 #include <imgui.h>
 #include <implot.h>
@@ -11,16 +15,46 @@
 #include "Common/HookableEvent.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Core.h"
+#include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/VideoConfig.h"
 
+namespace
+{
+void AtomicMax(std::atomic<u64>& target, u64 value)
+{
+  u64 current = target.load(std::memory_order_relaxed);
+  while (current < value &&
+         !target.compare_exchange_weak(current, value, std::memory_order_relaxed))
+  {
+  }
+}
+}  // namespace
+
 PerformanceMetrics::PerformanceMetrics()
 {
+  if (const char* path = std::getenv("MODERNGEKKO_FRAME_TIMELINE"); path && path[0] != '\0')
+  {
+    m_timeline_file.open(path, std::ios_base::out | std::ios_base::trunc);
+    m_timeline_enabled = m_timeline_file.is_open();
+    if (m_timeline_enabled)
+    {
+      m_timeline_file << "{\"schema\":\"moderngekko.frame_timeline\",\"version\":1,"
+                         "\"clock\":\"steady_us\"}\n";
+    }
+  }
+
   const auto invalidate_counters_last_time = [this](Core::State) {
     m_fps_counter.InvalidateLastTime();
     m_vps_counter.InvalidateLastTime();
   };
   m_state_change_hook = Core::AddOnStateChangedCallback(invalidate_counters_last_time);
+}
+
+PerformanceMetrics::~PerformanceMetrics()
+{
+  if (m_timeline_file.is_open())
+    m_timeline_file.flush();
 }
 
 void PerformanceMetrics::Reset()
@@ -35,21 +69,175 @@ void PerformanceMetrics::Reset()
   m_max_speed = 0;
 
   m_frame_presentation_offset = DT{};
+  m_timeline_last_present_sane = false;
 }
 
 void PerformanceMetrics::CountFrame()
 {
   m_fps_counter.Count();
+
+  if (!m_timeline_enabled)
+    return;
+
+  const TimePoint now = Clock::now();
+  const u64 sequence = m_timeline_present_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+  s64 interval_us = -1;
+  if (m_timeline_last_present_sane)
+  {
+    interval_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(now - m_timeline_last_present_time)
+            .count();
+  }
+  m_timeline_last_present_time = now;
+  m_timeline_last_present_sane = true;
+
+  const u64 audio_callbacks = m_timeline_audio_callbacks.exchange(0, std::memory_order_relaxed);
+  const u64 audio_work_us = m_timeline_audio_work_us.exchange(0, std::memory_order_relaxed);
+  const u64 audio_max_work_us =
+      m_timeline_audio_max_work_us.exchange(0, std::memory_order_relaxed);
+  const u64 audio_max_gap_us = m_timeline_audio_max_gap_us.exchange(0, std::memory_order_relaxed);
+
+  std::ostringstream line;
+  line << "{\"event\":\"frame\",\"ts_us\":" << TimelineNowUS() << ",\"frame\":"
+       << sequence << ",\"interval_us\":" << interval_us << ",\"vblank\":"
+       << m_timeline_vblank_sequence.load(std::memory_order_relaxed) << ",\"cpu_sleep_us\":"
+       << m_timeline_cpu_sleep_us.exchange(0, std::memory_order_relaxed)
+       << ",\"present_sleep_us\":"
+       << m_timeline_present_sleep_us.exchange(0, std::memory_order_relaxed)
+       << ",\"presentation_offset_us\":"
+       << std::chrono::duration_cast<std::chrono::microseconds>(
+              m_frame_presentation_offset.load(std::memory_order_relaxed))
+              .count()
+       << ",\"audio_callbacks\":" << audio_callbacks << ",\"audio_work_us\":"
+       << audio_work_us << ",\"audio_max_work_us\":" << audio_max_work_us
+       << ",\"audio_max_gap_us\":" << audio_max_gap_us << "}";
+  WriteTimelineLine(line.str());
 }
 
 void PerformanceMetrics::CountVBlank()
 {
   m_vps_counter.Count();
+
+  if (!m_timeline_enabled)
+    return;
+
+  const u64 sequence = m_timeline_vblank_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+  StaticRecompCore::TimelineSnapshot snapshot{};
+  if (g_static_recomp_core)
+    snapshot = g_static_recomp_core->GetTimelineSnapshot();
+
+  std::ostringstream line;
+  line << "{\"event\":\"vblank\",\"ts_us\":" << TimelineNowUS() << ",\"vblank\":"
+       << sequence << ",\"native_dispatches\":"
+       << snapshot.native_dispatches - m_timeline_last_native_dispatches
+       << ",\"native_bursts\":" << snapshot.bursts - m_timeline_last_native_bursts
+       << ",\"charged_cycles\":" << snapshot.charged_cycles - m_timeline_last_native_cycles
+       << ",\"idle_skips\":" << snapshot.idle_skips - m_timeline_last_idle_skips
+       << ",\"fallback_entries\":"
+       << snapshot.fallback_entries - m_timeline_last_fallback_entries << "}";
+  WriteTimelineLine(line.str());
+
+  m_timeline_last_native_dispatches = snapshot.native_dispatches;
+  m_timeline_last_native_bursts = snapshot.bursts;
+  m_timeline_last_native_cycles = snapshot.charged_cycles;
+  m_timeline_last_idle_skips = snapshot.idle_skips;
+  m_timeline_last_fallback_entries = snapshot.fallback_entries;
 }
 
 void PerformanceMetrics::CountThrottleSleep(DT sleep)
 {
   m_time_sleeping += sleep;
+  RecordSleepForTimeline(sleep, true);
+}
+
+void PerformanceMetrics::CountPresentationSleep(DT sleep)
+{
+  RecordSleepForTimeline(sleep, false);
+}
+
+u64 PerformanceMetrics::TimelineNowUS()
+{
+  return static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                              Clock::now().time_since_epoch())
+                              .count());
+}
+
+void PerformanceMetrics::RecordSleepForTimeline(DT sleep, bool cpu_thread)
+{
+  if (!m_timeline_enabled)
+    return;
+  const auto value = std::chrono::duration_cast<std::chrono::microseconds>(sleep).count();
+  if (value <= 0)
+    return;
+  (cpu_thread ? m_timeline_cpu_sleep_us : m_timeline_present_sleep_us)
+      .fetch_add(static_cast<u64>(value), std::memory_order_relaxed);
+}
+
+void PerformanceMetrics::WriteTimelineLine(const std::string& line)
+{
+  if (!m_timeline_enabled)
+    return;
+  std::lock_guard<std::mutex> guard(m_timeline_mutex);
+  m_timeline_file << line << '\n';
+}
+
+u64 PerformanceMetrics::RecordGpuSubmit()
+{
+  if (!m_timeline_enabled)
+    return 0;
+  const u64 sequence = m_timeline_gpu_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+  std::ostringstream line;
+  line << "{\"event\":\"gpu_submit\",\"ts_us\":" << TimelineNowUS() << ",\"gpu\":"
+       << sequence << ",\"frame_hint\":"
+       << m_timeline_present_sequence.load(std::memory_order_relaxed) + 1 << "}";
+  WriteTimelineLine(line.str());
+  return sequence;
+}
+
+void PerformanceMetrics::RecordGpuComplete(u64 sequence, double gpu_start_seconds,
+                                           double gpu_end_seconds, u32 status)
+{
+  if (!m_timeline_enabled || sequence == 0)
+    return;
+  std::ostringstream line;
+  line << std::fixed << std::setprecision(3) << "{\"event\":\"gpu_complete\",\"ts_us\":"
+       << TimelineNowUS() << ",\"gpu\":" << sequence << ",\"gpu_start_us\":"
+       << gpu_start_seconds * 1'000'000.0 << ",\"gpu_end_us\":"
+       << gpu_end_seconds * 1'000'000.0 << ",\"gpu_duration_us\":"
+       << std::max(0.0, gpu_end_seconds - gpu_start_seconds) * 1'000'000.0
+       << ",\"status\":" << status << "}";
+  WriteTimelineLine(line.str());
+}
+
+void PerformanceMetrics::RecordBackendPresent(DT duration, bool used_present_drawable)
+{
+  if (!m_timeline_enabled)
+    return;
+  std::ostringstream line;
+  line << "{\"event\":\"backend_present\",\"ts_us\":" << TimelineNowUS()
+       << ",\"frame_hint\":"
+       << m_timeline_present_sequence.load(std::memory_order_relaxed) + 1
+       << ",\"duration_us\":"
+       << std::chrono::duration_cast<std::chrono::microseconds>(duration).count()
+       << ",\"present_drawable\":" << (used_present_drawable ? "true" : "false") << "}";
+  WriteTimelineLine(line.str());
+}
+
+void PerformanceMetrics::RecordAudioCallback(DT work_duration, long requested_frames)
+{
+  if (!m_timeline_enabled)
+    return;
+  const u64 now_us = TimelineNowUS();
+  const u64 previous =
+      m_timeline_audio_last_callback_us.exchange(now_us, std::memory_order_relaxed);
+  const auto work = std::chrono::duration_cast<std::chrono::microseconds>(work_duration).count();
+  const u64 work_us = work > 0 ? static_cast<u64>(work) : 0;
+  m_timeline_audio_callbacks.fetch_add(1, std::memory_order_relaxed);
+  m_timeline_audio_work_us.fetch_add(work_us, std::memory_order_relaxed);
+  AtomicMax(m_timeline_audio_max_work_us, work_us);
+  if (previous != 0 && now_us > previous)
+    AtomicMax(m_timeline_audio_max_gap_us, now_us - previous);
+  (void)requested_frames;
 }
 
 void PerformanceMetrics::AdjustClockSpeed(s64 ticks, u32 new_ppc_clock, u32 old_ppc_clock)

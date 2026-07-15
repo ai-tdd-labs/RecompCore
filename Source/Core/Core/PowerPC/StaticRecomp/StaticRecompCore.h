@@ -36,6 +36,15 @@ class StaticRecompLockstepVerifier;
 class StaticRecompCore : public JitBase
 {
 public:
+  struct TimelineSnapshot
+  {
+    u64 native_dispatches;
+    u64 bursts;
+    u64 charged_cycles;
+    u64 idle_skips;
+    u64 fallback_entries;
+  };
+
   friend class StaticRecompLockstep::StaticRecompLockstepVerifier;
 
   explicit StaticRecompCore(Core::System& system, StaticRecompModuleSource module_source);
@@ -51,6 +60,13 @@ public:
   void Run() override;
   void SingleStep() override;
   bool IsModuleActive() const;
+  // Read on the CPU thread at a VI boundary. This deliberately avoids atomics
+  // in the per-dispatch hot path while still giving the frame timeline exact
+  // deltas.
+  TimelineSnapshot GetTimelineSnapshot() const
+  {
+    return {m_native_dispatches, m_bursts, m_charged_cycles, m_idle_skips, m_fallback_entries};
+  }
   bool HasNativeFallbackViolation() const { return m_native_fallback_violation; }
   const std::string& GetNativeFallbackViolation() const { return m_native_fallback_message; }
   bool DispatchableAt(u32 address);

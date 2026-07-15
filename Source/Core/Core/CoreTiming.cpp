@@ -410,11 +410,10 @@ TimePoint CoreTimingManager::GetTargetHostTime(s64 target_cycle)
 void CoreTimingManager::SleepUntil(TimePoint time_point)
 {
   const bool use_precision_timer = m_use_precision_timer.load(std::memory_order_relaxed);
+  const TimePoint time = Clock::now();
 
   if (Core::IsCPUThread())
   {
-    const TimePoint time = Clock::now();
-
     if (use_precision_timer)
       m_precision_cpu_timer.SleepUntil(time_point);
     else
@@ -430,6 +429,8 @@ void CoreTimingManager::SleepUntil(TimePoint time_point)
       m_precision_gpu_timer.SleepUntil(time_point);
     else
       std::this_thread::sleep_until(time_point);
+
+    m_system.GetPerfMetrics().CountPresentationSleep(Clock::now() - time);
   }
 }
 

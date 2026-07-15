@@ -10,6 +10,7 @@
 #include "Common/Logging/Log.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/System.h"
+#include "VideoCommon/PerformanceMetrics.h"
 
 #ifdef _WIN32
 #include <Objbase.h>
@@ -22,11 +23,15 @@ long CubebStream::DataCallback(cubeb_stream* stream, void* user_data, const void
                                void* output_buffer, long num_frames)
 {
   const auto* const self = static_cast<CubebStream*>(user_data);
+  const TimePoint start = Clock::now();
 
   if (self->m_stereo)
     self->m_mixer->Mix(static_cast<short*>(output_buffer), num_frames);
   else
     self->m_mixer->MixSurround(static_cast<float*>(output_buffer), num_frames);
+
+  Core::System::GetInstance().GetPerfMetrics().RecordAudioCallback(Clock::now() - start,
+                                                                   num_frames);
 
   return num_frames;
 }

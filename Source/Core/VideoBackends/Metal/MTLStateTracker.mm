@@ -20,6 +20,7 @@
 
 #include "VideoCommon/GeometryShaderManager.h"
 #include "VideoCommon/PixelShaderManager.h"
+#include "VideoCommon/PerformanceMetrics.h"
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VertexShaderManager.h"
 #include "VideoCommon/VideoConfig.h"
@@ -414,9 +415,16 @@ void Metal::StateTracker::FlushEncoders()
   if (!needs_submit)
     return;
 
+  const u64 timeline_gpu_sequence =
+      Core::System::GetInstance().GetPerfMetrics().RecordGpuSubmit();
+
   [m_current_render_cmdbuf
       addCompletedHandler:[backref = m_backref, draw = m_current_draw,
-                           q = std::move(m_current_perf_query)](id<MTLCommandBuffer> buf) {
+                           q = std::move(m_current_perf_query),
+                           timeline_gpu_sequence](id<MTLCommandBuffer> buf) {
+        Core::System::GetInstance().GetPerfMetrics().RecordGpuComplete(
+            timeline_gpu_sequence, [buf GPUStartTime], [buf GPUEndTime],
+            static_cast<u32>([buf status]));
         std::lock_guard<std::mutex> guard(backref->mtx);
         if (StateTracker* tracker = backref->state_tracker)
         {

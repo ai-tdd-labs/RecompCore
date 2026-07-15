@@ -771,11 +771,10 @@ void RunOnCPUThread(Core::System& system, Common::MoveOnlyFunction<void()> funct
 void Callback_FramePresented(const PresentInfo& present_info)
 {
   auto& perf_metrics = Core::System::GetInstance().GetPerfMetrics();
-  perf_metrics.CountFrame();
-
   const auto presentation_offset =
       present_info.actual_present_time - present_info.intended_present_time;
   perf_metrics.SetLatestFramePresentationOffset(presentation_offset);
+  perf_metrics.CountFrame();
 
   if (present_info.reason == PresentInfo::PresentReason::VideoInterfaceDuplicate)
     return;

@@ -12,7 +12,9 @@
 #include "VideoBackends/Metal/MTLVertexFormat.h"
 #include "VideoBackends/Metal/MTLVertexManager.h"
 
+#include "Core/System.h"
 #include "VideoCommon/FramebufferManager.h"
+#include "VideoCommon/PerformanceMetrics.h"
 #include "VideoCommon/Present.h"
 #include "VideoCommon/VideoBackendBase.h"
 
@@ -463,6 +465,8 @@ bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
 
 void Metal::Gfx::PresentBackbuffer()
 {
+  const TimePoint timeline_start = Clock::now();
+  bool used_present_drawable = false;
   @autoreleasepool
   {
     g_state_tracker->EndRenderPass();
@@ -475,7 +479,10 @@ void Metal::Gfx::PresentBackbuffer()
       // It also seems to improve frame pacing, so enable it by default with vsync
       if (g_ActiveConfig.iUsePresentDrawable == TriState::On ||
           (g_ActiveConfig.iUsePresentDrawable == TriState::Auto && g_ActiveConfig.bVSyncActive))
+      {
+        used_present_drawable = true;
         [g_state_tracker->GetRenderCmdBuf() presentDrawable:m_drawable];
+      }
       else
         [g_state_tracker->GetRenderCmdBuf()
             addScheduledHandler:[drawable = std::move(m_drawable)](id) { [drawable present]; }];
@@ -484,6 +491,8 @@ void Metal::Gfx::PresentBackbuffer()
     }
     g_state_tracker->FlushEncoders();
   }
+  Core::System::GetInstance().GetPerfMetrics().RecordBackendPresent(Clock::now() - timeline_start,
+                                                                    used_present_drawable);
 }
 
 void Metal::Gfx::CheckForSurfaceChange()
