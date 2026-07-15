@@ -96,6 +96,7 @@ void PerformanceMetrics::CountFrame()
   const u64 audio_max_work_us =
       m_timeline_audio_max_work_us.exchange(0, std::memory_order_relaxed);
   const u64 audio_max_gap_us = m_timeline_audio_max_gap_us.exchange(0, std::memory_order_relaxed);
+  const u64 gx_cpu_work_ns = m_timeline_gx_cpu_work_ns.exchange(0, std::memory_order_relaxed);
 
   std::ostringstream line;
   line << "{\"event\":\"frame\",\"ts_us\":" << TimelineNowUS() << ",\"frame\":"
@@ -108,6 +109,7 @@ void PerformanceMetrics::CountFrame()
        << std::chrono::duration_cast<std::chrono::microseconds>(
               m_frame_presentation_offset.load(std::memory_order_relaxed))
               .count()
+       << ",\"gx_cpu_work_us\":" << gx_cpu_work_ns / 1000
        << ",\"audio_callbacks\":" << audio_callbacks << ",\"audio_work_us\":"
        << audio_work_us << ",\"audio_max_work_us\":" << audio_max_work_us
        << ",\"audio_max_gap_us\":" << audio_max_gap_us << "}";
@@ -132,6 +134,8 @@ void PerformanceMetrics::CountVBlank()
        << snapshot.native_dispatches - m_timeline_last_native_dispatches
        << ",\"native_bursts\":" << snapshot.bursts - m_timeline_last_native_bursts
        << ",\"charged_cycles\":" << snapshot.charged_cycles - m_timeline_last_native_cycles
+       << ",\"native_wall_us\":"
+       << (snapshot.native_wall_ns - m_timeline_last_native_wall_ns) / 1000
        << ",\"idle_skips\":" << snapshot.idle_skips - m_timeline_last_idle_skips
        << ",\"fallback_entries\":"
        << snapshot.fallback_entries - m_timeline_last_fallback_entries << "}";
@@ -140,6 +144,7 @@ void PerformanceMetrics::CountVBlank()
   m_timeline_last_native_dispatches = snapshot.native_dispatches;
   m_timeline_last_native_bursts = snapshot.bursts;
   m_timeline_last_native_cycles = snapshot.charged_cycles;
+  m_timeline_last_native_wall_ns = snapshot.native_wall_ns;
   m_timeline_last_idle_skips = snapshot.idle_skips;
   m_timeline_last_fallback_entries = snapshot.fallback_entries;
 }
@@ -221,6 +226,15 @@ void PerformanceMetrics::RecordBackendPresent(DT duration, bool used_present_dra
        << std::chrono::duration_cast<std::chrono::microseconds>(duration).count()
        << ",\"present_drawable\":" << (used_present_drawable ? "true" : "false") << "}";
   WriteTimelineLine(line.str());
+}
+
+void PerformanceMetrics::RecordGxCpuWork(DT duration)
+{
+  if (!m_timeline_enabled)
+    return;
+  const auto value = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+  if (value > 0)
+    m_timeline_gx_cpu_work_ns.fetch_add(static_cast<u64>(value), std::memory_order_relaxed);
 }
 
 void PerformanceMetrics::RecordAudioCallback(DT work_duration, long requested_frames)

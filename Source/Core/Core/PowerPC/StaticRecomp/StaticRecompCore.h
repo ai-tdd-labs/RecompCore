@@ -42,6 +42,7 @@ public:
     u64 native_dispatches;
     u64 bursts;
     u64 charged_cycles;
+    u64 native_wall_ns;
     u64 idle_skips;
     u64 fallback_entries;
   };
@@ -68,7 +69,8 @@ public:
   // deltas.
   TimelineSnapshot GetTimelineSnapshot() const
   {
-    return {m_native_dispatches, m_bursts, m_charged_cycles, m_idle_skips, m_fallback_entries};
+    return {m_native_dispatches, m_bursts, m_charged_cycles, m_native_wall_ns, m_idle_skips,
+            m_fallback_entries};
   }
   bool HasNativeFallbackViolation() const { return m_native_fallback_violation; }
   const std::string& GetNativeFallbackViolation() const { return m_native_fallback_message; }
@@ -221,6 +223,7 @@ private:
   u64 m_native_alias_entries = 0;
   u64 m_bursts = 0;          // SyncIn..SyncOut native runs (diagnostic)
   u64 m_charged_cycles = 0;  // cycles flushed from module charges (diagnostic)
+  u64 m_native_wall_ns = 0;  // host time inside measured native bursts (timeline only)
   u64 m_idle_skips = 0;      // configured guest idle-loop skips (diagnostic)
 
   std::unordered_map<u32, std::string> m_function_symbols;

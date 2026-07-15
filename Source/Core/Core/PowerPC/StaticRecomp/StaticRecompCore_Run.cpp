@@ -13,6 +13,7 @@
 #include "Core/Config/ConfigManager.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/HW/ProcessorInterface.h"
+#include "VideoCommon/PerformanceMetrics.h"
 
 #include <cstdio>
 #include <atomic>
@@ -192,6 +193,7 @@ void StaticRecompCore::Run()
   // once per native dispatch when no trace or lockstep session was requested.
   const bool trace_function_entries = !m_function_symbols.empty();
   const bool lockstep_enabled = m_lockstep_verifier->IsEnabled();
+  const bool timeline_enabled = m_system.GetPerfMetrics().IsTimelineEnabled();
 
   while (*state_ptr == CPU::State::Running)
   {
@@ -217,6 +219,7 @@ void StaticRecompCore::Run()
       // FP-unavailable exception themselves (ppc_fp_available).
       if (m_module_active && (native_chunk_index = DispatchableChunkAt(ppc.pc)) >= 0)
       {
+        const TimePoint native_started = timeline_enabled ? Clock::now() : TimePoint{};
         SyncIn();
         ++m_bursts;
         do
@@ -282,6 +285,12 @@ void StaticRecompCore::Run()
                  (native_chunk_index = FastDispatchableChunkAt(m_guest.pc)) >= 0 &&
                  ppc.downcount > 0 && *state_ptr == CPU::State::Running);
         SyncOut();
+        if (timeline_enabled)
+        {
+          const auto elapsed =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - native_started);
+          m_native_wall_ns += static_cast<u64>(std::max<s64>(0, elapsed.count()));
+        }
         // Probe-only event translation. The module's guest timebase includes
         // the emulated wall-clock epoch, whereas XFB timestamps use
         // CoreTiming ticks. Consume only while explicitly armed and attach a

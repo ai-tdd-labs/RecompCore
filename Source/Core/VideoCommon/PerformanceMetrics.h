@@ -47,6 +47,7 @@ public:
   void RecordGpuComplete(u64 sequence, double gpu_start_seconds, double gpu_end_seconds,
                          u32 status);
   void RecordBackendPresent(DT duration, bool used_present_drawable);
+  void RecordGxCpuWork(DT duration);
   void RecordAudioCallback(DT work_duration, long requested_frames);
   void RecordPipelineCompile(DT shader_config, DT backend_create, bool cache_entry_existed,
                              bool success, bool uber);
@@ -105,9 +106,11 @@ private:
   std::atomic<u64> m_timeline_audio_max_work_us{};
   std::atomic<u64> m_timeline_audio_max_gap_us{};
   std::atomic<u64> m_timeline_audio_last_callback_us{};
+  std::atomic<u64> m_timeline_gx_cpu_work_ns{};
   u64 m_timeline_last_native_dispatches = 0;
   u64 m_timeline_last_native_bursts = 0;
   u64 m_timeline_last_native_cycles = 0;
+  u64 m_timeline_last_native_wall_ns = 0;
   u64 m_timeline_last_idle_skips = 0;
   u64 m_timeline_last_fallback_entries = 0;
 

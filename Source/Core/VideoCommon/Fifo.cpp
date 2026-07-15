@@ -28,6 +28,7 @@
 #include "VideoCommon/DataReader.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OpcodeDecoding.h"
+#include "VideoCommon/PerformanceMetrics.h"
 #include "VideoCommon/VertexLoaderManager.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoBackendBase.h"
@@ -287,6 +288,10 @@ void FifoManager::RunGpuLoop()
 {
   m_gpu_mainloop.Run(
       [this] {
+        auto& perf_metrics = m_system.GetPerfMetrics();
+        const bool timeline_enabled = perf_metrics.IsTimelineEnabled();
+        const TimePoint gx_started = timeline_enabled ? Clock::now() : TimePoint{};
+        bool gx_work_done = false;
         // Run events from the CPU thread.
         AsyncRequests::GetInstance()->PullEvents();
 
@@ -302,6 +307,7 @@ void FifoManager::RunGpuLoop()
           // See comment in SyncGPU
           if (write_ptr > seen_ptr)
           {
+            gx_work_done = true;
             m_video_buffer_read_ptr =
                 OpcodeDecoder::RunFifo(DataReader(m_video_buffer_read_ptr, write_ptr), nullptr);
             m_video_buffer_seen_ptr = write_ptr;
@@ -319,6 +325,7 @@ void FifoManager::RunGpuLoop()
                  fifo.CPReadWriteDistance.load(std::memory_order_relaxed) &&
                  !AtBreakpoint(m_system))
           {
+            gx_work_done = true;
             if (m_config_sync_gpu && m_sync_ticks.load() < m_config_sync_gpu_min_distance)
               break;
 
@@ -384,6 +391,8 @@ void FifoManager::RunGpuLoop()
           g_vertex_manager->Flush();
           g_framebuffer_manager->RefreshPeekCache();
         }
+        if (gx_work_done)
+          perf_metrics.RecordGxCpuWork(Clock::now() - gx_started);
       },
       100);
 }
@@ -434,6 +443,10 @@ void FifoManager::RunGpu()
 
 int FifoManager::RunGpuOnCpu(int ticks)
 {
+  auto& perf_metrics = m_system.GetPerfMetrics();
+  const bool timeline_enabled = perf_metrics.IsTimelineEnabled();
+  const TimePoint gx_started = timeline_enabled ? Clock::now() : TimePoint{};
+  bool gx_work_done = false;
   auto& command_processor = m_system.GetCommandProcessor();
   auto& fifo = command_processor.GetFifo();
   bool reset_simd_state = false;
@@ -442,6 +455,7 @@ int FifoManager::RunGpuOnCpu(int ticks)
          fifo.CPReadWriteDistance.load(std::memory_order_relaxed) && !AtBreakpoint(m_system) &&
          available_ticks >= 0)
   {
+    gx_work_done = true;
     if (m_use_deterministic_gpu_thread)
     {
       ReadDataFromFifoOnCPU(fifo.CPReadPointer.load(std::memory_order_relaxed));
@@ -485,6 +499,9 @@ int FifoManager::RunGpuOnCpu(int ticks)
 
   // Discard all available ticks as there is nothing to do any more.
   m_sync_ticks.store(std::min(available_ticks, 0));
+
+  if (gx_work_done)
+    perf_metrics.RecordGxCpuWork(Clock::now() - gx_started);
 
   // If the GPU is idle, drop the handler.
   if (available_ticks >= 0)
