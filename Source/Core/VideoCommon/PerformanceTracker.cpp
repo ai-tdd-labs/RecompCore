@@ -195,5 +195,8 @@ void PerformanceTracker::LogRenderTimeToFile(DT val)
                       std::ios_base::out);
   }
 
-  m_bench_file << std::fixed << std::setprecision(8) << DT_ms(val).count() << std::endl;
+  // This is measurement-only output. Flushing on every presented frame can
+  // create the very periodic I/O stalls the log is intended to diagnose.
+  // The stream is flushed on normal teardown instead.
+  m_bench_file << std::fixed << std::setprecision(8) << DT_ms(val).count() << '\n';
 }
