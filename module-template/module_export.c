@@ -15,10 +15,20 @@ int moderngekko_module_patch_dispatch(CPUState* ctx, u32 address);
 static int chassis_dispatch(CPUState* ctx, u32 address)
 {
 #if defined(MODERNGEKKO_HAVE_MODULE_PATCH)
-    if (moderngekko_module_patch_dispatch(ctx, address))
-        return 1;
+    // Keep the generic patch callback completely off the hot path for every
+    // address not declared by the immutable sidecar manifest.
+    switch (address)
+    {
+#include "module_patch_dispatch.inc"
+    default:
+        break;
+    }
+    return dolrecomp_dispatch(ctx, address);
+#else
+    // StaticRecomp deliberately installs no host-call callback. Keep its
+    // patched and unpatched modules on the same raw native hot path.
+    return dolrecomp_dispatch(ctx, address);
 #endif
-    return dolrecomp_call(ctx, address);
 }
 
 static void chassis_on_state_loaded(CPUState* ctx)

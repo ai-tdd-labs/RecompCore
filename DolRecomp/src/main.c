@@ -148,8 +148,7 @@ static int function_list_add(FunctionList* list, u32 start, u32 end) {
 static void emit_dispatch_helpers(FILE* out, const FunctionList* funcs, u32 entry_point) {
     fprintf(out, "\n#define DOLRECOMP_ENTRY_POINT 0x%08Xu\n", entry_point);
     fprintf(out, "\ntypedef void (*DolRecompFunction)(CPUState* ctx);\n");
-    fprintf(out, "\nstatic inline int dolrecomp_call(CPUState* ctx, u32 address) {\n");
-    fprintf(out, "    if (ppc_host_call(ctx, address)) return 1;\n");
+    fprintf(out, "\nstatic inline int dolrecomp_dispatch(CPUState* ctx, u32 address) {\n");
 
     bool optimized = false;
     if (funcs->count >= 3) {
@@ -207,6 +206,10 @@ static void emit_dispatch_helpers(FILE* out, const FunctionList* funcs, u32 entr
     }
 
     fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "\nstatic inline int dolrecomp_call(CPUState* ctx, u32 address) {\n");
+    fprintf(out, "    if (ppc_host_call(ctx, address)) return 1;\n");
+    fprintf(out, "    return dolrecomp_dispatch(ctx, address);\n");
     fprintf(out, "}\n");
     fprintf(out, "\nstatic inline int dolrecomp_run_blocks(CPUState* ctx, u32 max_blocks) {\n");
     fprintf(out, "    u32 blocks = 0;\n");

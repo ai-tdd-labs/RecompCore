@@ -47,9 +47,28 @@ add_custom_command(
 
 file(GLOB CHUNK_SOURCES "${GENERATED_DIR}/chunks/*.c")
 set(MODULE_PATCH_SOURCE "${GENERATED_DIR}/module_patch.c")
+set(MODULE_PATCH_ADDRESSES "${GENERATED_DIR}/module_patch_addresses.txt")
 set(MODULE_PATCH_SOURCES)
 if(EXISTS "${MODULE_PATCH_SOURCE}")
+  if(NOT EXISTS "${MODULE_PATCH_ADDRESSES}")
+    message(FATAL_ERROR
+      "module_patch.c requires the explicit sidecar module_patch_addresses.txt")
+  endif()
   list(APPEND MODULE_PATCH_SOURCES "${MODULE_PATCH_SOURCE}")
+endif()
+
+set(MODULE_PATCH_DISPATCH)
+if(MODULE_PATCH_SOURCES)
+  set(MODULE_PATCH_DISPATCH "${CMAKE_CURRENT_BINARY_DIR}/module_patch_dispatch.inc")
+  add_custom_command(
+    OUTPUT "${MODULE_PATCH_DISPATCH}"
+    COMMAND Python3::Interpreter
+            "${CMAKE_CURRENT_SOURCE_DIR}/gen_module_patch_dispatch.py"
+            "${MODULE_PATCH_ADDRESSES}" "${GENERATED_DIR}/generated.h"
+            "${MODULE_PATCH_DISPATCH}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gen_module_patch_dispatch.py"
+            "${MODULE_PATCH_ADDRESSES}" "${GENERATED_DIR}/generated.h"
+    COMMENT "Validating sparse module-patch addresses")
 endif()
 
 add_library(${MODULE_NAME} SHARED
@@ -60,11 +79,16 @@ add_library(${MODULE_NAME} SHARED
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter_table.c"
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter_float.c"
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter_integer.c"
+  ${MODULE_PATCH_DISPATCH}
   ${MODULE_PATCH_SOURCES}
   ${CHUNK_SOURCES})
 
 set_target_properties(${MODULE_NAME} PROPERTIES PREFIX "" OUTPUT_NAME "${MODULE_NAME}" UNITY_BUILD OFF)
 set_source_files_properties("${MODULE_TABLES}" PROPERTIES HEADER_FILE_ONLY TRUE GENERATED TRUE)
+if(MODULE_PATCH_DISPATCH)
+  set_source_files_properties("${MODULE_PATCH_DISPATCH}"
+                              PROPERTIES HEADER_FILE_ONLY TRUE GENERATED TRUE)
+endif()
 
 target_compile_definitions(${MODULE_NAME} PRIVATE MODULE_GAME_ID="${GAME_ID}")
 if(MODULE_PATCH_SOURCES)
