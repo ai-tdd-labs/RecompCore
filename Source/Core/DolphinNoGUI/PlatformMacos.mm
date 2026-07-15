@@ -162,6 +162,27 @@
 }
 @end
 
+// Quartz reads keyboard state directly from the HID event source.  The render
+// view still receives the matching Cocoa keyDown event; NSView's default
+// implementation treats an unhandled printable key as invalid text input and
+// plays the system alert sound.  Keep the view in the responder chain so menu
+// key equivalents continue to work, but consume game keys after Cocoa has had
+// an opportunity to route those equivalents.
+@interface RenderView : NSView
+@end
+
+@implementation RenderView
+- (BOOL)acceptsFirstResponder
+{
+  return YES;
+}
+
+- (void)keyDown:(NSEvent*)event
+{
+  // ControllerInterface/Quartz polls this key independently.
+}
+@end
+
 namespace
 {
 class PlatformMacOS : public Platform
@@ -220,6 +241,10 @@ bool PlatformMacOS::Init()
                                  styleMask:styleMask
                                    backing:NSBackingStoreBuffered
                                      defer:NO];
+  RenderView* render_view =
+      [[RenderView alloc] initWithFrame:NSMakeRect(0, 0, m_window_width, m_window_height)];
+  [m_window setContentView:render_view];
+  [m_window makeFirstResponder:render_view];
   if (m_window_x == -1 || m_window_y == -1)
   {
     [m_window center];
