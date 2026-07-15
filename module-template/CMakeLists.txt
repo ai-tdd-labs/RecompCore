@@ -10,6 +10,7 @@ project(recompcore_module C)
 #         -DGXRUNTIME_DIR=/path/to/GXRuntime
 
 set(CMAKE_C_STANDARD 11)
+option(MODERNGEKKO_ENABLE_LTO "Use link-time optimization for release modules" ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -83,9 +84,19 @@ endif()
 # Keep each generated chunk as its own translation unit. Clang uses ThinLTO and
 # lld; GCC deliberately avoids LTO until the differential parity gate covers it.
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
-  target_compile_options(${MODULE_NAME} PRIVATE -O2 -flto=thin -fvisibility=hidden
+  target_compile_options(${MODULE_NAME} PRIVATE -O2 -fvisibility=hidden
                          -ffp-contract=off -fno-fast-math)
-  target_link_options(${MODULE_NAME} PRIVATE -flto=thin)
+  if(MODERNGEKKO_ENABLE_LTO)
+    target_compile_options(${MODULE_NAME} PRIVATE -flto=thin)
+    target_link_options(${MODULE_NAME} PRIVATE -flto=thin)
+    if(APPLE)
+      # Apple ld can reuse ThinLTO backend objects across patch-only relinks.
+      # Keep the cache inside the stable incremental module workspace.
+      file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lto-cache")
+      target_link_options(${MODULE_NAME} PRIVATE
+                          "LINKER:-cache_path_lto,${CMAKE_CURRENT_BINARY_DIR}/lto-cache")
+    endif()
+  endif()
   if(UNIX AND NOT APPLE)
     target_link_options(${MODULE_NAME} PRIVATE -fuse-ld=lld)
   endif()

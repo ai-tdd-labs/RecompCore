@@ -185,6 +185,11 @@ void StaticRecompCore::Run()
     return;
   }
 
+  // Oracle features are immutable for a run. Do not call their cold helpers
+  // once per native dispatch when no trace or lockstep session was requested.
+  const bool trace_function_entries = !m_function_symbols.empty();
+  const bool lockstep_enabled = m_lockstep_verifier->IsEnabled();
+
   while (*state_ptr == CPU::State::Running)
   {
     core_timing.Advance();
@@ -207,8 +212,9 @@ void StaticRecompCore::Run()
         ++m_bursts;
         do
         {
-          TraceFunctionEntry();
-          const bool do_ls = m_lockstep_verifier->ShouldCheck(m_guest.pc);
+          if (trace_function_entries)
+            TraceFunctionEntry();
+          const bool do_ls = lockstep_enabled && m_lockstep_verifier->ShouldCheck(m_guest.pc);
           if (do_ls)
           {
             m_lockstep_verifier->Prepare(m_guest);
@@ -240,6 +246,7 @@ void StaticRecompCore::Run()
           // Idle loop skipping for configured target loops (e.g. Wii Menu OSIdleThread)
           if (m_guest.pc == m_idle_pc && m_idle_pc != 0)
           {
+            ++m_idle_skips;
             m_system.GetCoreTiming().Idle();
           }
 

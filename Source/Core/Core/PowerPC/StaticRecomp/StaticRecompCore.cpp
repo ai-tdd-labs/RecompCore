@@ -155,7 +155,7 @@ void StaticRecompCore::Shutdown()
                "native_shims=%llu native_aliases=%llu "
                "fallback_entries=%llu native_reentries=%llu first_fallback=0x%08X "
                "first_reentry=0x%08X smc_failed=%u verifications=%llu reverify_events=%llu "
-               "bursts=%llu charged_cycles=%llu traced_functions=%llu\n",
+               "bursts=%llu charged_cycles=%llu idle_skips=%llu traced_functions=%llu\n",
                (unsigned long long)m_native_dispatches, (unsigned long long)m_fallback_steps,
                (unsigned long long)m_native_exceptions,
                (unsigned long long)m_hook_fallback_instructions,
@@ -166,6 +166,7 @@ void StaticRecompCore::Shutdown()
                m_first_native_reentry_pc, m_failed_chunks,
                (unsigned long long)m_verifications, (unsigned long long)m_reverify_events,
                (unsigned long long)m_bursts, (unsigned long long)m_charged_cycles,
+               (unsigned long long)m_idle_skips,
                (unsigned long long)m_traced_function_entries);
   const auto print_top_pcs = [](const char* label, const std::unordered_map<u32, u64>& counts) {
     std::vector<std::pair<u32, u64>> sorted(counts.begin(), counts.end());

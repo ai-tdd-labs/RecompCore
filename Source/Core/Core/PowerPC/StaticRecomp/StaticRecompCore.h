@@ -54,7 +54,26 @@ public:
   bool HasNativeFallbackViolation() const { return m_native_fallback_violation; }
   const std::string& GetNativeFallbackViolation() const { return m_native_fallback_message; }
   bool DispatchableAt(u32 address);
-  bool FastDispatchableAt(u32 address) const;
+  // This is the dispatcher back-edge hot path. Keep the complete lookup in
+  // the header so release builds can fold it into Run() instead of paying a
+  // function call and repeating the chunk-index helper on every native block.
+  bool FastDispatchableAt(u32 address) const
+  {
+    if (!m_module_active || m_chunk_lookup_table.empty())
+      return false;
+
+    int lookup_index = -1;
+    if (address >= 0x80000000u && address < 0x80000000u + m_lookup_ram_size)
+      lookup_index = static_cast<int>((address - 0x80000000u) >> 2);
+    else if (address >= 0x90000000u && address < 0x90000000u + m_lookup_exram_size)
+      lookup_index =
+          static_cast<int>((m_lookup_ram_size >> 2) + ((address - 0x90000000u) >> 2));
+
+    if (lookup_index < 0 || lookup_index >= static_cast<int>(m_chunk_lookup_table.size()))
+      return false;
+    const int chunk_index = m_chunk_lookup_table[lookup_index];
+    return chunk_index >= 0 && m_chunk_state[chunk_index] == CHUNK_VERIFIED;
+  }
 
   void ClearCache() override;
   void Jit(u32 em_address) override {}
@@ -169,6 +188,7 @@ private:
   u64 m_native_alias_entries = 0;
   u64 m_bursts = 0;          // SyncIn..SyncOut native runs (diagnostic)
   u64 m_charged_cycles = 0;  // cycles flushed from module charges (diagnostic)
+  u64 m_idle_skips = 0;      // configured guest idle-loop skips (diagnostic)
 
   std::unordered_map<u32, std::string> m_function_symbols;
   std::string m_trace_function;

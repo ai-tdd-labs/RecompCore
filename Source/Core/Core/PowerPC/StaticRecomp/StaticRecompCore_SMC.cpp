@@ -63,12 +63,6 @@ int StaticRecompCore::ChunkIndexOf(u32 address) const
   return m_chunk_lookup_table[idx];
 }
 
-bool StaticRecompCore::FastDispatchableAt(u32 address) const
-{
-  const int index = ChunkIndexOf(address);
-  return index >= 0 && m_chunk_state[index] == CHUNK_VERIFIED;
-}
-
 bool StaticRecompCore::DispatchableAt(u32 address)
 {
   const int index = ChunkIndexOf(address);
