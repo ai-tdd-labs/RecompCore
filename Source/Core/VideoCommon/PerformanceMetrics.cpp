@@ -240,6 +240,29 @@ void PerformanceMetrics::RecordAudioCallback(DT work_duration, long requested_fr
   (void)requested_frames;
 }
 
+void PerformanceMetrics::RecordPipelineCompile(DT shader_config, DT backend_create,
+                                               bool cache_entry_existed, bool success,
+                                               bool uber)
+{
+  if (!m_timeline_enabled)
+    return;
+  const auto config_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(shader_config).count();
+  const auto create_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(backend_create).count();
+  std::ostringstream line;
+  line << "{\"event\":\"pipeline_compile\",\"ts_us\":" << TimelineNowUS()
+       << ",\"frame_hint\":"
+       << m_timeline_present_sequence.load(std::memory_order_relaxed) + 1
+       << ",\"config_us\":" << std::max<s64>(0, config_us)
+       << ",\"create_us\":" << std::max<s64>(0, create_us)
+       << ",\"duration_us\":" << std::max<s64>(0, config_us + create_us)
+       << ",\"cache_entry_existed\":" << (cache_entry_existed ? "true" : "false")
+       << ",\"success\":" << (success ? "true" : "false")
+       << ",\"uber\":" << (uber ? "true" : "false") << "}";
+  WriteTimelineLine(line.str());
+}
+
 void PerformanceMetrics::AdjustClockSpeed(s64 ticks, u32 new_ppc_clock, u32 old_ppc_clock)
 {
   for (auto& sample : m_samples)

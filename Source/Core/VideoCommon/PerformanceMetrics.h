@@ -48,6 +48,9 @@ public:
                          u32 status);
   void RecordBackendPresent(DT duration, bool used_present_drawable);
   void RecordAudioCallback(DT work_duration, long requested_frames);
+  void RecordPipelineCompile(DT shader_config, DT backend_create, bool cache_entry_existed,
+                             bool success, bool uber);
+  bool IsTimelineEnabled() const { return m_timeline_enabled; }
 
   // Getter Functions. May be called from any thread.
   double GetFPS() const;

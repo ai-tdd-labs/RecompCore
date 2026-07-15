@@ -11,6 +11,7 @@
 #include "Common/FileUtil.h"
 #include "Common/MsgHandler.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/System.h"
 
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/ConstantManager.h"
@@ -19,6 +20,7 @@
 #include "VideoCommon/FramebufferShaderGen.h"
 #include "VideoCommon/PipelineUtils.h"
 #include "VideoCommon/Present.h"
+#include "VideoCommon/PerformanceMetrics.h"
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VertexLoaderManager.h"
 #include "VideoCommon/VertexManagerBase.h"
@@ -127,10 +129,25 @@ const AbstractPipeline* ShaderCache::GetPipelineForUid(const GXPipelineUid& uid)
     return it->second.first.get();
 
   const bool exists_in_cache = it != m_gx_pipeline_cache.end();
+  auto& perf_metrics = Core::System::GetInstance().GetPerfMetrics();
+  const bool trace_compile = perf_metrics.IsTimelineEnabled();
+  TimePoint config_started{};
+  if (trace_compile)
+    config_started = Clock::now();
   std::unique_ptr<AbstractPipeline> pipeline;
   std::optional<AbstractPipelineConfig> pipeline_config = GetGXPipelineConfig(uid);
+  TimePoint create_started{};
+  if (trace_compile)
+    create_started = Clock::now();
   if (pipeline_config)
     pipeline = g_gfx->CreatePipeline(*pipeline_config);
+  if (trace_compile)
+  {
+    const TimePoint finished = Clock::now();
+    perf_metrics.RecordPipelineCompile(create_started - config_started,
+                                       finished - create_started, exists_in_cache,
+                                       pipeline != nullptr, false);
+  }
   if (g_ActiveConfig.bShaderCache && !exists_in_cache)
     AppendGXPipelineUID(uid);
   return InsertGXPipeline(uid, std::move(pipeline));
@@ -159,10 +176,26 @@ const AbstractPipeline* ShaderCache::GetUberPipelineForUid(const GXUberPipelineU
   if (it != m_gx_uber_pipeline_cache.end() && !it->second.second)
     return it->second.first.get();
 
+  auto& perf_metrics = Core::System::GetInstance().GetPerfMetrics();
+  const bool trace_compile = perf_metrics.IsTimelineEnabled();
+  TimePoint config_started{};
+  if (trace_compile)
+    config_started = Clock::now();
   std::unique_ptr<AbstractPipeline> pipeline;
   std::optional<AbstractPipelineConfig> pipeline_config = GetGXPipelineConfig(uid);
+  TimePoint create_started{};
+  if (trace_compile)
+    create_started = Clock::now();
   if (pipeline_config)
     pipeline = g_gfx->CreatePipeline(*pipeline_config);
+  if (trace_compile)
+  {
+    const TimePoint finished = Clock::now();
+    perf_metrics.RecordPipelineCompile(create_started - config_started,
+                                       finished - create_started,
+                                       it != m_gx_uber_pipeline_cache.end(), pipeline != nullptr,
+                                       true);
+  }
   return InsertGXUberPipeline(uid, std::move(pipeline));
 }
 
