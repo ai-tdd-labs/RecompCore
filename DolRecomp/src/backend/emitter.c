@@ -567,6 +567,9 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
         }
     }
 
+    fprintf(out, "#ifndef DOLRECOMP_PATCH_PC\n");
+    fprintf(out, "#define DOLRECOMP_PATCH_PC(ctx, address) ((void)0)\n");
+    fprintf(out, "#endif\n\n");
     fprintf(out, "void func_%08X(CPUState* ctx) {\n", func_addr);
     fprintf(out, "    switch (ctx->pc) {\n");
     for (i = 0; i < count; i++) {
@@ -578,6 +581,7 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
 
     for (i = 0; i < count; i++) {
         fprintf(out, "label_%08X:\n", insts[i].address);
+        fprintf(out, "    DOLRECOMP_PATCH_PC(ctx, 0x%08Xu);\n", insts[i].address);
         fprintf(out, "    ctx->pc = 0x%08Xu;\n", insts[i].address);
         if (leader[i] && block_cost[i] != 0)
             fprintf(out, "    ctx->downcount -= %u;\n", block_cost[i]);

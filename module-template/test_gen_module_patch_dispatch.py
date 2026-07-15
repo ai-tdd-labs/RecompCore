@@ -26,7 +26,7 @@ class PatchManifestTest(unittest.TestCase):
         return path
 
     def test_generates_one_shared_callback_body_for_sorted_targets(self) -> None:
-        output = self.root / "dispatch.inc"
+        output = self.root / "module_patch_points.h"
         generate(
             self.manifest("# projection and HUD\n0x80001000\n0x80100004\n"),
             self.header,
@@ -35,7 +35,10 @@ class PatchManifestTest(unittest.TestCase):
         generated = output.read_text()
         self.assertIn("case 0x80001000u:", generated)
         self.assertIn("case 0x80100004u:", generated)
-        self.assertEqual(generated.count("moderngekko_module_patch_dispatch"), 1)
+        self.assertIn("#define DOLRECOMP_PATCH_PC(ctx, address)", generated)
+        self.assertIn("moderngekko_module_patch_dispatch((ctx), (address))", generated)
+        self.assertIn("return;", generated)
+        self.assertEqual(generated.count("moderngekko_module_patch_dispatch"), 2)
 
     def test_rejects_unaligned_duplicate_unsorted_and_uncovered_targets(self) -> None:
         bad_manifests = (
@@ -59,7 +62,15 @@ class TemplateDispatchTest(unittest.TestCase):
     def test_staticrecomp_template_never_uses_standalone_host_call_wrapper(self) -> None:
         template = (Path(__file__).parent / "module_export.c").read_text()
         self.assertNotIn("dolrecomp_call(ctx, address)", template)
-        self.assertEqual(template.count("dolrecomp_dispatch(ctx, address)"), 2)
+        self.assertEqual(template.count("dolrecomp_dispatch(ctx, address)"), 1)
+        self.assertNotIn("module_patch_dispatch.inc", template)
+
+    def test_generated_chunks_offer_a_zero_cost_default_patch_point(self) -> None:
+        emitter = (
+            Path(__file__).parents[1] / "DolRecomp" / "src" / "backend" / "emitter.c"
+        ).read_text()
+        self.assertIn("#ifndef DOLRECOMP_PATCH_PC", emitter)
+        self.assertIn("DOLRECOMP_PATCH_PC(ctx, 0x%08Xu);", emitter)
 
     def test_dolrecomp_keeps_legacy_host_call_wrapper_around_raw_dispatch(self) -> None:
         emitter = (Path(__file__).parents[1] / "DolRecomp" / "src" / "main.c").read_text()

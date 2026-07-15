@@ -8,27 +8,11 @@
 
 #include "StaticRecompABI.h"
 
-#if defined(MODERNGEKKO_HAVE_MODULE_PATCH)
-int moderngekko_module_patch_dispatch(CPUState* ctx, u32 address);
-#endif
-
 static int chassis_dispatch(CPUState* ctx, u32 address)
 {
-#if defined(MODERNGEKKO_HAVE_MODULE_PATCH)
-    // Keep the generic patch callback completely off the hot path for every
-    // address not declared by the immutable sidecar manifest.
-    switch (address)
-    {
-#include "module_patch_dispatch.inc"
-    default:
-        break;
-    }
+    // Sparse module hooks are compiled into their exact generated PC labels.
+    // Dispatch therefore stays identical for patched and unpatched modules.
     return dolrecomp_dispatch(ctx, address);
-#else
-    // StaticRecomp deliberately installs no host-call callback. Keep its
-    // patched and unpatched modules on the same raw native hot path.
-    return dolrecomp_dispatch(ctx, address);
-#endif
 }
 
 static void chassis_on_state_loaded(CPUState* ctx)
