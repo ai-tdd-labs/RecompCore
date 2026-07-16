@@ -36,16 +36,20 @@ public:
 
   // Call from CPU thread.
   void CountThrottleSleep(DT sleep);
+  void RecordThrottleDecision(DT lateness, bool reference_second_advanced);
   void CountPresentationSleep(DT sleep);
   void AdjustClockSpeed(s64 ticks, u32 new_ppc_clock, u32 old_ppc_clock);
   void CountPerformanceMarker(s64 ticks, u32 ticks_per_second);
 
   // Opt-in, low-overhead host phase timeline. Set MODERNGEKKO_FRAME_TIMELINE
-  // to an output path before launch. GPU completion is asynchronous: these
-  // methods must never introduce a wait into the render path.
+  // to an output path before launch. MODERNGEKKO_FRAME_TIMELINE_BUFFERED=1
+  // keeps the trace in RAM until orderly shutdown so measurement I/O cannot
+  // disturb an acceptance run. GPU completion is asynchronous: these methods
+  // must never introduce a wait into the render path.
   u64 RecordGpuSubmit();
   void RecordGpuComplete(u64 sequence, double gpu_start_seconds, double gpu_end_seconds,
                          u32 status);
+  void RecordBackendAcquire(DT duration, bool acquired_drawable);
   void RecordBackendPresent(DT duration, bool used_present_drawable);
   void RecordGxCpuWork(DT duration);
   void RecordAudioCallback(DT work_duration, long requested_frames);
@@ -92,6 +96,9 @@ private:
   DT m_time_sleeping{};
 
   bool m_timeline_enabled = false;
+  bool m_timeline_buffered = false;
+  std::string m_timeline_path;
+  std::string m_timeline_buffer;
   std::ofstream m_timeline_file;
   std::mutex m_timeline_mutex;
   std::atomic<u64> m_timeline_present_sequence{};
@@ -107,10 +114,18 @@ private:
   std::atomic<u64> m_timeline_audio_max_gap_us{};
   std::atomic<u64> m_timeline_audio_last_callback_us{};
   std::atomic<u64> m_timeline_gx_cpu_work_ns{};
+  // CPU-thread-only pacing counters. CountVBlank consumes and resets these on
+  // the same thread, avoiding atomics in the throttle hot path.
+  u64 m_timeline_throttle_calls = 0;
+  u64 m_timeline_throttle_late_us = 0;
+  u64 m_timeline_throttle_max_late_us = 0;
+  u64 m_timeline_throttle_reference_rollovers = 0;
   u64 m_timeline_last_native_dispatches = 0;
   u64 m_timeline_last_native_bursts = 0;
   u64 m_timeline_last_native_cycles = 0;
   u64 m_timeline_last_native_wall_ns = 0;
+  u64 m_timeline_last_cpu_thread_time_us = 0;
+  u64 m_timeline_last_present_thread_time_us = 0;
   u64 m_timeline_last_idle_skips = 0;
   u64 m_timeline_last_fallback_entries = 0;
 

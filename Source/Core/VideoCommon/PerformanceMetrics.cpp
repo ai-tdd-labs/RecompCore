@@ -7,7 +7,18 @@
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
+#include <optional>
 #include <sstream>
+
+#ifdef _WIN32
+#include <Windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/thread_info.h>
+#include <pthread.h>
+#else
+#include <time.h>
+#endif
 
 #include <imgui.h>
 #include <implot.h>
@@ -29,18 +40,71 @@ void AtomicMax(std::atomic<u64>& target, u64 value)
   {
   }
 }
+
+std::optional<u64> CurrentThreadCpuTimeUS()
+{
+#ifdef _WIN32
+  FILETIME creation_time{};
+  FILETIME exit_time{};
+  FILETIME kernel_time{};
+  FILETIME user_time{};
+  if (!GetThreadTimes(GetCurrentThread(), &creation_time, &exit_time, &kernel_time, &user_time))
+    return std::nullopt;
+
+  ULARGE_INTEGER kernel{};
+  ULARGE_INTEGER user{};
+  kernel.LowPart = kernel_time.dwLowDateTime;
+  kernel.HighPart = kernel_time.dwHighDateTime;
+  user.LowPart = user_time.dwLowDateTime;
+  user.HighPart = user_time.dwHighDateTime;
+  return (kernel.QuadPart + user.QuadPart) / 10;
+#elif defined(__APPLE__)
+  thread_basic_info_data_t info{};
+  mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+  const thread_t thread = pthread_mach_thread_np(pthread_self());
+  if (thread_info(thread, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count) !=
+      KERN_SUCCESS)
+  {
+    return std::nullopt;
+  }
+  const u64 seconds = static_cast<u64>(info.user_time.seconds) + info.system_time.seconds;
+  const u64 microseconds = static_cast<u64>(info.user_time.microseconds) +
+                           info.system_time.microseconds;
+  return seconds * 1'000'000 + microseconds;
+#elif defined(CLOCK_THREAD_CPUTIME_ID)
+  timespec time{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time) != 0)
+    return std::nullopt;
+  return static_cast<u64>(time.tv_sec) * 1'000'000 + time.tv_nsec / 1000;
+#else
+  return std::nullopt;
+#endif
+}
 }  // namespace
 
 PerformanceMetrics::PerformanceMetrics()
 {
   if (const char* path = std::getenv("MODERNGEKKO_FRAME_TIMELINE"); path && path[0] != '\0')
   {
-    m_timeline_file.open(path, std::ios_base::out | std::ios_base::trunc);
-    m_timeline_enabled = m_timeline_file.is_open();
+    m_timeline_path = path;
+    const char* buffered = std::getenv("MODERNGEKKO_FRAME_TIMELINE_BUFFERED");
+    m_timeline_buffered = buffered && buffered[0] != '\0' && buffered[0] != '0';
+    if (m_timeline_buffered)
+    {
+      // A full deterministic MKDD replay is currently about 12 MiB. Reserve
+      // enough once so appends stay allocation-free through the measured race.
+      m_timeline_buffer.reserve(16 * 1024 * 1024);
+      m_timeline_enabled = true;
+    }
+    else
+    {
+      m_timeline_file.open(path, std::ios_base::out | std::ios_base::trunc);
+      m_timeline_enabled = m_timeline_file.is_open();
+    }
     if (m_timeline_enabled)
     {
-      m_timeline_file << "{\"schema\":\"moderngekko.frame_timeline\",\"version\":1,"
-                         "\"clock\":\"steady_us\"}\n";
+      WriteTimelineLine("{\"schema\":\"moderngekko.frame_timeline\",\"version\":1,"
+                        "\"clock\":\"steady_us\"}");
     }
   }
 
@@ -53,8 +117,21 @@ PerformanceMetrics::PerformanceMetrics()
 
 PerformanceMetrics::~PerformanceMetrics()
 {
-  if (m_timeline_file.is_open())
+  if (m_timeline_buffered && m_timeline_enabled)
+  {
+    std::lock_guard<std::mutex> guard(m_timeline_mutex);
+    std::ofstream output(m_timeline_path, std::ios_base::out | std::ios_base::trunc |
+                                              std::ios_base::binary);
+    if (output.is_open())
+    {
+      output.write(m_timeline_buffer.data(),
+                   static_cast<std::streamsize>(m_timeline_buffer.size()));
+    }
+  }
+  else if (m_timeline_file.is_open())
+  {
     m_timeline_file.flush();
+  }
 }
 
 void PerformanceMetrics::Reset()
@@ -80,6 +157,15 @@ void PerformanceMetrics::CountFrame()
     return;
 
   const TimePoint now = Clock::now();
+  const bool frame_on_cpu_thread = Core::IsCPUThread();
+  const std::optional<u64> present_thread_time_us = CurrentThreadCpuTimeUS();
+  const u64 present_thread_running_us =
+      present_thread_time_us && m_timeline_last_present_thread_time_us != 0 &&
+              *present_thread_time_us >= m_timeline_last_present_thread_time_us
+          ? *present_thread_time_us - m_timeline_last_present_thread_time_us
+          : 0;
+  if (present_thread_time_us)
+    m_timeline_last_present_thread_time_us = *present_thread_time_us;
   const u64 sequence = m_timeline_present_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
   s64 interval_us = -1;
   if (m_timeline_last_present_sane)
@@ -109,6 +195,8 @@ void PerformanceMetrics::CountFrame()
        << std::chrono::duration_cast<std::chrono::microseconds>(
               m_frame_presentation_offset.load(std::memory_order_relaxed))
               .count()
+       << ",\"present_thread_running_us\":" << present_thread_running_us
+       << ",\"frame_on_cpu_thread\":" << (frame_on_cpu_thread ? "true" : "false")
        << ",\"gx_cpu_work_us\":" << gx_cpu_work_ns / 1000
        << ",\"audio_callbacks\":" << audio_callbacks << ",\"audio_work_us\":"
        << audio_work_us << ",\"audio_max_work_us\":" << audio_max_work_us
@@ -127,6 +215,20 @@ void PerformanceMetrics::CountVBlank()
   StaticRecompCore::TimelineSnapshot snapshot{};
   if (g_static_recomp_core)
     snapshot = g_static_recomp_core->GetTimelineSnapshot();
+  const std::optional<u64> cpu_thread_time_us = CurrentThreadCpuTimeUS();
+  const u64 cpu_thread_running_us =
+      cpu_thread_time_us && m_timeline_last_cpu_thread_time_us != 0 &&
+              *cpu_thread_time_us >= m_timeline_last_cpu_thread_time_us
+          ? *cpu_thread_time_us - m_timeline_last_cpu_thread_time_us
+          : 0;
+  const u64 throttle_calls = m_timeline_throttle_calls;
+  const u64 throttle_late_us = m_timeline_throttle_late_us;
+  const u64 throttle_max_late_us = m_timeline_throttle_max_late_us;
+  const u64 throttle_reference_rollovers = m_timeline_throttle_reference_rollovers;
+  m_timeline_throttle_calls = 0;
+  m_timeline_throttle_late_us = 0;
+  m_timeline_throttle_max_late_us = 0;
+  m_timeline_throttle_reference_rollovers = 0;
 
   std::ostringstream line;
   line << "{\"event\":\"vblank\",\"ts_us\":" << TimelineNowUS() << ",\"vblank\":"
@@ -136,6 +238,11 @@ void PerformanceMetrics::CountVBlank()
        << ",\"charged_cycles\":" << snapshot.charged_cycles - m_timeline_last_native_cycles
        << ",\"native_wall_us\":"
        << (snapshot.native_wall_ns - m_timeline_last_native_wall_ns) / 1000
+       << ",\"cpu_thread_running_us\":" << cpu_thread_running_us
+       << ",\"throttle_calls\":" << throttle_calls
+       << ",\"throttle_late_us\":" << throttle_late_us
+       << ",\"throttle_max_late_us\":" << throttle_max_late_us
+       << ",\"throttle_reference_rollovers\":" << throttle_reference_rollovers
        << ",\"idle_skips\":" << snapshot.idle_skips - m_timeline_last_idle_skips
        << ",\"fallback_entries\":"
        << snapshot.fallback_entries - m_timeline_last_fallback_entries << "}";
@@ -145,6 +252,8 @@ void PerformanceMetrics::CountVBlank()
   m_timeline_last_native_bursts = snapshot.bursts;
   m_timeline_last_native_cycles = snapshot.charged_cycles;
   m_timeline_last_native_wall_ns = snapshot.native_wall_ns;
+  if (cpu_thread_time_us)
+    m_timeline_last_cpu_thread_time_us = *cpu_thread_time_us;
   m_timeline_last_idle_skips = snapshot.idle_skips;
   m_timeline_last_fallback_entries = snapshot.fallback_entries;
 }
@@ -153,6 +262,22 @@ void PerformanceMetrics::CountThrottleSleep(DT sleep)
 {
   m_time_sleeping += sleep;
   RecordSleepForTimeline(sleep, true);
+}
+
+void PerformanceMetrics::RecordThrottleDecision(DT lateness, bool reference_second_advanced)
+{
+  if (!m_timeline_enabled)
+    return;
+  ++m_timeline_throttle_calls;
+  const s64 late_us = std::chrono::duration_cast<std::chrono::microseconds>(lateness).count();
+  if (late_us > 0)
+  {
+    const u64 value = static_cast<u64>(late_us);
+    m_timeline_throttle_late_us += value;
+    m_timeline_throttle_max_late_us = std::max(m_timeline_throttle_max_late_us, value);
+  }
+  if (reference_second_advanced)
+    ++m_timeline_throttle_reference_rollovers;
 }
 
 void PerformanceMetrics::CountPresentationSleep(DT sleep)
@@ -183,7 +308,15 @@ void PerformanceMetrics::WriteTimelineLine(const std::string& line)
   if (!m_timeline_enabled)
     return;
   std::lock_guard<std::mutex> guard(m_timeline_mutex);
-  m_timeline_file << line << '\n';
+  if (m_timeline_buffered)
+  {
+    m_timeline_buffer.append(line);
+    m_timeline_buffer.push_back('\n');
+  }
+  else
+  {
+    m_timeline_file << line << '\n';
+  }
 }
 
 u64 PerformanceMetrics::RecordGpuSubmit()
@@ -211,6 +344,20 @@ void PerformanceMetrics::RecordGpuComplete(u64 sequence, double gpu_start_second
        << gpu_end_seconds * 1'000'000.0 << ",\"gpu_duration_us\":"
        << std::max(0.0, gpu_end_seconds - gpu_start_seconds) * 1'000'000.0
        << ",\"status\":" << status << "}";
+  WriteTimelineLine(line.str());
+}
+
+void PerformanceMetrics::RecordBackendAcquire(DT duration, bool acquired_drawable)
+{
+  if (!m_timeline_enabled)
+    return;
+  std::ostringstream line;
+  line << "{\"event\":\"backend_acquire\",\"ts_us\":" << TimelineNowUS()
+       << ",\"frame_hint\":"
+       << m_timeline_present_sequence.load(std::memory_order_relaxed) + 1
+       << ",\"duration_us\":"
+       << std::chrono::duration_cast<std::chrono::microseconds>(duration).count()
+       << ",\"acquired_drawable\":" << (acquired_drawable ? "true" : "false") << "}";
   WriteTimelineLine(line.str());
 }
 

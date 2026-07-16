@@ -466,8 +466,10 @@ void CoreTimingManager::Throttle(const s64 target_cycle)
 
   // Push throttle reference values forward by exact seconds.
   // This avoids drifting from cumulative rounding errors.
+  s64 reference_seconds_advanced = 0;
   {
     const s64 sec_adj = (target_cycle - m_throttle_reference_cycle) / m_throttle_adj_clock_per_sec;
+    reference_seconds_advanced = sec_adj;
     const s64 cycle_adj = sec_adj * m_throttle_adj_clock_per_sec;
 
     m_throttle_reference_cycle += cycle_adj;
@@ -491,6 +493,9 @@ void CoreTimingManager::Throttle(const s64 target_cycle)
   }
 
   UpdateVISkip(time, target_time);
+
+  m_system.GetPerfMetrics().RecordThrottleDecision(
+      time > target_time ? time - target_time : DT::zero(), reference_seconds_advanced != 0);
 
   SleepUntil(target_time);
 }

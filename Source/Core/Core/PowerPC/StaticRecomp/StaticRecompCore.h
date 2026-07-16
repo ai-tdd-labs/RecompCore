@@ -203,6 +203,8 @@ private:
   // Benchmark-only A/B switch. Production defaults to direct verified chunk
   // entry; the generic ABI dispatcher remains available as an exact baseline.
   bool m_use_generic_module_dispatch = false;
+  bool m_measure_native_wall = false;
+  bool m_sample_native_pcs = false;
   bool m_native_fallback_violation = false;
   std::string m_native_fallback_message;
   std::unique_ptr<JitBase> m_fallback_jit;

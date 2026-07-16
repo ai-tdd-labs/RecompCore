@@ -452,6 +452,8 @@ void Metal::Gfx::DispatchComputeShader(const AbstractShader* shader,  //
 
 bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
 {
+  const bool timeline_enabled = Core::System::GetInstance().GetPerfMetrics().IsTimelineEnabled();
+  const TimePoint acquire_started = timeline_enabled ? Clock::now() : TimePoint{};
   @autoreleasepool
   {
     CheckForSurfaceChange();
@@ -459,6 +461,11 @@ bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
     m_drawable = MRCRetain([m_layer nextDrawable]);
     m_backbuffer->UpdateBackbufferTexture([m_drawable texture]);
     SetAndClearFramebuffer(m_backbuffer.get(), clear_color);
+    if (timeline_enabled)
+    {
+      Core::System::GetInstance().GetPerfMetrics().RecordBackendAcquire(
+          Clock::now() - acquire_started, m_drawable != nullptr);
+    }
     return m_drawable != nullptr;
   }
 }

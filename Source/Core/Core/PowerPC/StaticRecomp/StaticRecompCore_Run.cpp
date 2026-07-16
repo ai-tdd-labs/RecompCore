@@ -194,6 +194,12 @@ void StaticRecompCore::Run()
   const bool trace_function_entries = !m_function_symbols.empty();
   const bool lockstep_enabled = m_lockstep_verifier->IsEnabled();
   const bool timeline_enabled = m_system.GetPerfMetrics().IsTimelineEnabled();
+  // Exact native-wall timing brackets every native burst (roughly 1,400 per
+  // MKDD frame), so it is an explicit profiler observer rather than part of
+  // the low-overhead acceptance timeline. CPU-thread time remains sampled at
+  // each VI boundary and is the authoritative standard-run CPU measurement.
+  const bool measure_native_wall = timeline_enabled && m_measure_native_wall;
+  const bool sample_native_pcs = m_sample_native_pcs;
 
   while (*state_ptr == CPU::State::Running)
   {
@@ -219,7 +225,7 @@ void StaticRecompCore::Run()
       // FP-unavailable exception themselves (ppc_fp_available).
       if (m_module_active && (native_chunk_index = DispatchableChunkAt(ppc.pc)) >= 0)
       {
-        const TimePoint native_started = timeline_enabled ? Clock::now() : TimePoint{};
+        const TimePoint native_started = measure_native_wall ? Clock::now() : TimePoint{};
         SyncIn();
         ++m_bursts;
         do
@@ -240,7 +246,7 @@ void StaticRecompCore::Run()
           else
             m_module->chunk_functions[native_chunk_index](&m_guest);
           ++m_native_dispatches;
-          if ((m_native_dispatches & 0x3FFu) == 0u)
+          if (sample_native_pcs && (m_native_dispatches & 0x3FFu) == 0u)
             ++m_native_pc_samples[m_guest.pc];
 
           if (do_ls)
@@ -285,7 +291,7 @@ void StaticRecompCore::Run()
                  (native_chunk_index = FastDispatchableChunkAt(m_guest.pc)) >= 0 &&
                  ppc.downcount > 0 && *state_ptr == CPU::State::Running);
         SyncOut();
-        if (timeline_enabled)
+        if (measure_native_wall)
         {
           const auto elapsed =
               std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - native_started);

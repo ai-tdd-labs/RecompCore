@@ -180,8 +180,16 @@ void StaticRecompCore::Init()
   const char* module_dispatch = std::getenv("STATICRECOMP_MODULE_DISPATCH");
   m_use_generic_module_dispatch =
       module_dispatch != nullptr && std::strcmp(module_dispatch, "generic") == 0;
+  const char* native_wall = std::getenv("STATICRECOMP_TIMELINE_NATIVE_WALL");
+  m_measure_native_wall =
+      native_wall != nullptr && native_wall[0] != '\0' && native_wall[0] != '0';
+  const char* native_pc_sampling = std::getenv("STATICRECOMP_NATIVE_PC_SAMPLING");
+  m_sample_native_pcs = native_pc_sampling != nullptr && native_pc_sampling[0] != '\0' &&
+                        native_pc_sampling[0] != '0';
   std::fprintf(stderr, "[staticrecomp] module dispatch=%s\n",
                m_use_generic_module_dispatch ? "generic" : "direct-chunk");
+  std::fprintf(stderr, "[staticrecomp] detailed observers: native_wall=%u native_pc_samples=%u\n",
+               m_measure_native_wall ? 1u : 0u, m_sample_native_pcs ? 1u : 0u);
   m_lockstep_verifier = std::make_unique<StaticRecompLockstep::StaticRecompLockstepVerifier>(*this);
   m_lockstep_verifier->Init();
 
