@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <future>
 #include <mutex>
@@ -291,6 +292,13 @@ static void CpuThread(Core::System& system, const std::optional<std::string>& sa
     Common::SetCurrentThreadName("CPU thread");
   else
     Common::SetCurrentThreadName("CPU-GPU thread");
+
+  if (const char* performance_qos = std::getenv("MODERNGEKKO_CPU_THREAD_QOS");
+      performance_qos && performance_qos[0] != '\0' && performance_qos[0] != '0')
+  {
+    NOTICE_LOG_FMT(CORE, "Foreground CPU scheduling policy requested: {}",
+                   Common::SetCurrentThreadPerformanceQoS() ? "enabled" : "unsupported");
+  }
 
   // This needs to be delayed until after the video backend is ready.
   DolphinAnalytics::Instance().ReportGameStart();

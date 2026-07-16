@@ -117,6 +117,11 @@ void SetCurrentThreadName(const char* name)
   SetCurrentThreadNameViaApi(name);
 }
 
+bool SetCurrentThreadPerformanceQoS()
+{
+  return false;
+}
+
 #else  // !WIN32, so must be POSIX threads
 
 void SetThreadAffinity(std::thread::native_handle_type thread, u32 mask)
@@ -184,6 +189,15 @@ void SetCurrentThreadName(const char* name)
   // VTune uses OS thread names by default but probably supports longer names when set via its own
   // API.
   __itt_thread_set_name(name);
+#endif
+}
+
+bool SetCurrentThreadPerformanceQoS()
+{
+#ifdef __APPLE__
+  return pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) == 0;
+#else
+  return false;
 #endif
 }
 

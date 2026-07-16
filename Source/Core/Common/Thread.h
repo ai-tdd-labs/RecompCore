@@ -39,6 +39,10 @@ inline void YieldCPU()
 
 void SetCurrentThreadName(const char* name);
 
+// Request latency-sensitive scheduling for an opt-in foreground emulation
+// thread. Returns false on hosts without an equivalent policy.
+bool SetCurrentThreadPerformanceQoS();
+
 #ifndef _WIN32
 // Returns the lowest address of the stack and the size of the stack
 std::tuple<void*, size_t> GetCurrentThreadStack();
