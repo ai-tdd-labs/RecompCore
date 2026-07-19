@@ -64,6 +64,8 @@ public:
 
   void AdjustPadBufferSize(unsigned int size);
   void SetHostInputAuthority(bool enable);
+  void SetAdaptiveBuffer(bool enable) { m_adaptive_buffer = enable; }
+  bool CanStart();
 
   void KickPlayer(PlayerId player);
 
@@ -88,6 +90,8 @@ private:
     ENetPeer* socket = nullptr;
     u32 ping = 0;
     u32 current_game = 0;
+    bool ready = false;
+    u8 controller_count = 1;
 
     Common::QoSSession qos_session;
 
@@ -154,6 +158,7 @@ private:
 
   // pulled from OnConnect()
   void AssignNewUserAPad(const Client& player);
+  void RebuildControllerMappings();
   // pulled from OnConnect()
   // returns the PID given
   PlayerId GiveFirstAvailableIDTo(ENetPeer* player);
@@ -176,6 +181,7 @@ private:
   bool m_codes_synced = true;
   bool m_start_pending = false;
   bool m_host_input_authority = false;
+  bool m_adaptive_buffer = false;
   PlayerId m_current_golfer = 1;
   PlayerId m_pending_golfer = 0;
 
@@ -198,6 +204,7 @@ private:
 
   SyncIdentifier m_selected_game_identifier;
   std::string m_selected_game_name;
+  std::string m_compatibility_fingerprint;
   std::thread m_thread;
   Common::Event m_chunked_data_event;
   Common::Event m_chunked_data_complete_event;

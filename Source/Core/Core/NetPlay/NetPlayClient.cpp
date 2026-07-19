@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <ranges>
 #include <span>
 #include <thread>
 #include <tuple>
@@ -80,6 +81,30 @@ using namespace WiimoteCommon;
 static std::mutex crit_netplay_client;
 static NetPlayClient* netplay_client = nullptr;
 static bool s_si_poll_batching = false;
+static std::string s_compatibility_fingerprint;
+
+void SetCompatibilityFingerprint(std::string fingerprint)
+{
+  s_compatibility_fingerprint = std::move(fingerprint);
+}
+
+const std::string& GetCompatibilityFingerprint()
+{
+  return s_compatibility_fingerprint;
+}
+
+InputWaitTelemetry NetPlayClient::GetInputWaitTelemetry()
+{
+  std::lock_guard lk(crit_netplay_client);
+  if (!netplay_client)
+    return {};
+
+  return {
+      .active = netplay_client->m_is_running.IsSet(),
+      .total_wait_ns = netplay_client->m_total_input_wait_ns.load(std::memory_order_relaxed),
+      .buffer_size = netplay_client->m_telemetry_buffer_size.load(std::memory_order_relaxed),
+  };
+}
 
 // called from ---GUI--- thread
 NetPlayClient::~NetPlayClient()
@@ -124,8 +149,10 @@ NetPlayClient::~NetPlayClient()
 
 // called from ---GUI--- thread
 NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog,
-                             std::string name, const NetTraversalConfig& traversal_config)
-    : m_dialog(dialog), m_player_name(std::move(name))
+                             std::string name, const NetTraversalConfig& traversal_config,
+                             const u8 controller_count)
+    : m_dialog(dialog), m_player_name(std::move(name)),
+      m_local_controller_count(std::clamp<u8>(controller_count, 1, 4))
 {
   ClearBuffers();
 
@@ -247,6 +274,8 @@ bool NetPlayClient::Connect()
   packet << Common::GetScmRevGitStr();
   packet << Common::GetNetplayDolphinVer();
   packet << m_player_name;
+  packet << GetCompatibilityFingerprint();
+  packet << m_local_controller_count;
   Send(packet);
   enet_host_flush(m_client);
   sf::Packet rpac;
@@ -270,6 +299,7 @@ bool NetPlayClient::Connect()
 
   ConnectionError error;
   rpac >> error;
+  m_connection_error = error;
 
   // got error message
   if (error != ConnectionError::NoError)
@@ -289,6 +319,12 @@ bool NetPlayClient::Connect()
     case ConnectionError::NameTooLong:
       m_dialog->OnConnectionError(_trans("Nickname is too long."));
       break;
+    case ConnectionError::CompatibilityMismatch:
+      m_dialog->OnConnectionError(_trans("The recomp builds are incompatible."));
+      break;
+    case ConnectionError::RoomFull:
+      m_dialog->OnConnectionError(_trans("The controller slots are full."));
+      break;
     default:
       m_dialog->OnConnectionError(_trans("The server sent an unknown error message."));
       break;
@@ -300,11 +336,13 @@ bool NetPlayClient::Connect()
   else
   {
     rpac >> m_pid;
+    rpac >> m_local_controller_count;
 
     Player player;
     player.name = m_player_name;
     player.pid = m_pid;
     player.revision = Common::GetNetplayDolphinVer();
+    player.controller_count = m_local_controller_count;
 
     // add self to player list
     m_players[m_pid] = player;
@@ -441,6 +479,23 @@ void NetPlayClient::OnData(sf::Packet& packet)
     OnPlayerPingData(packet);
     break;
 
+  case MessageID::Ready:
+  case MessageID::NotReady:
+  {
+    PlayerId pid;
+    u8 controller_count;
+    packet >> pid;
+    packet >> controller_count;
+    std::lock_guard lkp(m_crit.players);
+    if (const auto it = m_players.find(pid); it != m_players.end())
+    {
+      it->second.ready = mid == MessageID::Ready;
+      it->second.controller_count = controller_count;
+    }
+    m_dialog->Update();
+  }
+  break;
+
   case MessageID::DesyncDetected:
     OnDesyncDetected(packet);
     break;
@@ -485,6 +540,8 @@ void NetPlayClient::OnPlayerJoin(sf::Packet& packet)
   packet >> player.pid;
   packet >> player.name;
   packet >> player.revision;
+  packet >> player.ready;
+  packet >> player.controller_count;
 
   INFO_LOG_FMT(NETPLAY, "Player {} ({}) using {} joined", player.name, player.pid, player.revision);
 
@@ -757,6 +814,7 @@ void NetPlayClient::OnPadBuffer(sf::Packet& packet)
   packet >> size;
 
   m_target_buffer_size = size;
+  m_telemetry_buffer_size.store(size, std::memory_order_relaxed);
   m_dialog->OnPadBufferChanged(size);
 }
 
@@ -1166,6 +1224,51 @@ std::vector<const Player*> NetPlayClient::GetPlayers()
     players.push_back(&pair.second);
 
   return players;
+}
+
+std::vector<Player> NetPlayClient::GetPlayersSnapshot()
+{
+  std::lock_guard lkp(m_crit.players);
+  std::vector<Player> players;
+  players.reserve(m_players.size());
+  for (const Player& player : std::views::values(m_players))
+    players.push_back(player);
+  return players;
+}
+
+PadMappingArray NetPlayClient::GetWiimoteMappingSnapshot()
+{
+  std::lock_guard lkp(m_crit.players);
+  return m_wiimote_map;
+}
+
+u8 NetPlayClient::GetAssignedControllerCount()
+{
+  std::lock_guard lkp(m_crit.players);
+  if (const auto it = m_players.find(m_pid); it != m_players.end())
+    return it->second.controller_count;
+  return m_local_controller_count;
+}
+
+void NetPlayClient::SetLocalControllerCount(const u8 count)
+{
+  m_local_controller_count = std::clamp<u8>(count, 1, 4);
+  SetReady(false);
+}
+
+void NetPlayClient::SetReady(const bool ready)
+{
+  sf::Packet packet;
+  packet << (ready ? MessageID::Ready : MessageID::NotReady);
+  packet << m_local_controller_count;
+  SendAsync(std::move(packet));
+
+  std::lock_guard lkp(m_crit.players);
+  if (const auto it = m_players.find(m_pid); it != m_players.end())
+  {
+    it->second.ready = ready;
+    it->second.controller_count = m_local_controller_count;
+  }
 }
 
 const NetSettings& NetPlayClient::GetNetSettings() const
@@ -1667,6 +1770,7 @@ const PadMappingArray& NetPlayClient::GetWiimoteMapping() const
 void NetPlayClient::AdjustPadBufferSize(const unsigned int size)
 {
   m_target_buffer_size = size;
+  m_telemetry_buffer_size.store(size, std::memory_order_relaxed);
   m_dialog->OnPadBufferChanged(size);
 }
 

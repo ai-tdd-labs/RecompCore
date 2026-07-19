@@ -20,6 +20,15 @@ namespace NetPlay
 
 bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatus* pad_status)
 {
+  auto record_wait = [this](const std::chrono::steady_clock::time_point start) {
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    m_total_input_wait_ns.fetch_add(
+        static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()),
+        std::memory_order_relaxed);
+  };
+
+  auto wait_start = std::chrono::steady_clock::now();
+  bool waited = false;
   while (m_wait_on_input)
   {
     if (!m_is_running.IsSet())
@@ -36,8 +45,11 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
       m_wait_on_input_received = false;
     }
 
+    waited = true;
     m_wait_on_input_event.Wait();
   }
+  if (waited)
+    record_wait(wait_start);
 
   if (IsFirstInGamePad(pad_nb) && batching)
   {
@@ -94,6 +106,8 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
     }
   }
 
+  wait_start = std::chrono::steady_clock::now();
+  waited = false;
   while (m_pad_buffer[pad_nb].Size() == 0)
   {
     if (!m_is_running.IsSet())
@@ -101,8 +115,11 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
       return false;
     }
 
+    waited = true;
     m_gc_pad_event.Wait();
   }
+  if (waited)
+    record_wait(wait_start);
 
   m_pad_buffer[pad_nb].Pop(*pad_status);
 
@@ -137,6 +154,8 @@ bool NetPlayClient::WiimoteUpdate(const std::span<WiimoteDataBatchEntry>& entrie
         SendAsync(std::move(packet));
     }
 
+    const auto wait_start = std::chrono::steady_clock::now();
+    bool waited = false;
     while (m_wiimote_buffer[entry.wiimote].Size() == 0)
     {
       if (!m_is_running.IsSet())
@@ -144,7 +163,16 @@ bool NetPlayClient::WiimoteUpdate(const std::span<WiimoteDataBatchEntry>& entrie
         return false;
       }
 
+      waited = true;
       m_wii_pad_event.Wait();
+    }
+    if (waited)
+    {
+      const auto elapsed = std::chrono::steady_clock::now() - wait_start;
+      m_total_input_wait_ns.fetch_add(
+          static_cast<u64>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()),
+          std::memory_order_relaxed);
     }
 
     m_wiimote_buffer[entry.wiimote].Pop(*entry.state);

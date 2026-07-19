@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -121,7 +122,7 @@ NetPlayServer::~NetPlayServer()
 // called from ---GUI--- thread
 NetPlayServer::NetPlayServer(const u16 port, const bool forward_port, NetPlayUI* dialog,
                              const NetTraversalConfig& traversal_config)
-    : m_dialog(dialog)
+    : m_compatibility_fingerprint(GetCompatibilityFingerprint()), m_dialog(dialog)
 {
   //--use server time
   if (enet_initialize() != 0)
@@ -459,6 +460,24 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 
   received_packet >> new_player.revision;
   received_packet >> new_player.name;
+  std::string compatibility_fingerprint;
+  received_packet >> compatibility_fingerprint;
+  received_packet >> new_player.controller_count;
+  new_player.controller_count = std::clamp<u8>(new_player.controller_count, 1, 4);
+
+  if (compatibility_fingerprint != m_compatibility_fingerprint)
+    return ConnectionError::CompatibilityMismatch;
+
+  const u32 assigned_controllers =
+      std::accumulate(m_players.begin(), m_players.end(), u32{0},
+                      [](const u32 count, const auto& entry) {
+                        return count + entry.second.controller_count;
+                      });
+  const u32 available_controllers = 4 - std::min(assigned_controllers, u32{4});
+  if (available_controllers == 0)
+    return ConnectionError::RoomFull;
+  new_player.controller_count =
+      static_cast<u8>(std::min<u32>(new_player.controller_count, available_controllers));
 
   if (StringUTF8CodePointCount(new_player.name) > MAX_NAME_LENGTH)
     return ConnectionError::NameTooLong;
@@ -474,10 +493,11 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 
   // tell other players a new player joined
   SendResponseToAllPlayers(MessageID::PlayerJoin, new_player.pid, new_player.name,
-                           new_player.revision);
+                           new_player.revision, new_player.ready, new_player.controller_count);
 
   // tell new client they connected and their ID
-  SendResponseToPlayer(new_player, MessageID::ConnectionSuccessful, new_player.pid);
+  SendResponseToPlayer(new_player, MessageID::ConnectionSuccessful, new_player.pid,
+                       new_player.controller_count);
 
   // tell new client the selected game
   if (!m_selected_game_name.empty())
@@ -497,7 +517,8 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
   for (const auto& existing_player : std::views::values(m_players))
   {
     SendResponseToPlayer(new_player, MessageID::PlayerJoin, existing_player.pid,
-                         existing_player.name, existing_player.revision);
+                         existing_player.name, existing_player.revision, existing_player.ready,
+                         existing_player.controller_count);
 
     SendResponseToPlayer(new_player, MessageID::GameStatus, existing_player.pid,
                          static_cast<u8>(existing_player.game_status));
@@ -876,6 +897,48 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     spac << player.ping;
 
     SendToClients(spac);
+
+    if (m_adaptive_buffer)
+    {
+      u32 maximum_ping = 0;
+      for (const Client& client : std::views::values(m_players))
+        maximum_ping = std::max(maximum_ping, client.ping);
+      const unsigned int target = std::clamp(2u + maximum_ping / 17u, 2u, 12u);
+      if (target != m_target_buffer_size)
+        AdjustPadBufferSize(target);
+    }
+  }
+  break;
+
+  case MessageID::Ready:
+  case MessageID::NotReady:
+  {
+    u8 controller_count;
+    packet >> controller_count;
+    {
+      std::lock_guard lkp(m_crit.players);
+      const u32 other_controllers =
+          std::accumulate(m_players.begin(), m_players.end(), u32{0},
+                          [&player](const u32 count, const auto& entry) {
+                            return count +
+                                   (entry.second.pid == player.pid ? 0 :
+                                                                    entry.second.controller_count);
+                          });
+      const u8 available = static_cast<u8>(4 - std::min(other_controllers, u32{3}));
+      player.controller_count = std::clamp<u8>(controller_count, 1, available);
+      player.ready = mid == MessageID::Ready;
+      RebuildControllerMappings();
+    }
+    SendResponseToAllPlayers(mid, player.pid, player.controller_count);
+  }
+  break;
+
+  case MessageID::PadBufferRequest:
+  {
+    u32 requested;
+    packet >> requested;
+    if (m_adaptive_buffer)
+      AdjustPadBufferSize(std::clamp(requested, 2u, 4u));
   }
   break;
 
@@ -2129,17 +2192,63 @@ bool NetPlayServer::PlayerHasControllerMapped(const PlayerId pid) const
          std::ranges::any_of(m_wiimote_map, mapping_matches_player_id);
 }
 
+bool NetPlayServer::CanStart()
+{
+  std::lock_guard lkp(m_crit.players);
+  const u32 controller_count =
+      std::accumulate(m_players.begin(), m_players.end(), u32{0},
+                      [](const u32 count, const auto& entry) {
+                        return count + entry.second.controller_count;
+                      });
+  return controller_count >= 2 && !m_players.empty() &&
+         std::ranges::all_of(m_players, [](const auto& entry) {
+           return entry.second.ready &&
+                  entry.second.game_status == SyncIdentifierComparison::SameGame;
+         });
+}
+
 void NetPlayServer::AssignNewUserAPad(const Client& player)
 {
+  u8 assigned = 0;
   for (PlayerId& mapping : m_pad_map)
   {
     // 0 means unmapped
     if (mapping == 0)
     {
       mapping = player.pid;
-      break;
+      if (++assigned == player.controller_count)
+        break;
     }
   }
+
+  assigned = 0;
+  for (PlayerId& mapping : m_wiimote_map)
+  {
+    if (mapping == 0)
+    {
+      mapping = player.pid;
+      if (++assigned == player.controller_count)
+        break;
+    }
+  }
+}
+
+void NetPlayServer::RebuildControllerMappings()
+{
+  m_pad_map.fill(0);
+  m_wiimote_map.fill(0);
+  std::size_t slot = 0;
+  for (const Client& client : std::views::values(m_players))
+  {
+    for (u8 controller = 0; controller < client.controller_count && slot < m_pad_map.size();
+         ++controller, ++slot)
+    {
+      m_pad_map[slot] = client.pid;
+      m_wiimote_map[slot] = client.pid;
+    }
+  }
+  UpdatePadMapping();
+  UpdateWiimoteMapping();
 }
 
 PlayerId NetPlayServer::GiveFirstAvailableIDTo(ENetPeer* player)

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <SFML/Network/Packet.hpp>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <map>
@@ -42,6 +43,13 @@ struct SerializedWiimoteState;
 
 namespace NetPlay
 {
+struct InputWaitTelemetry
+{
+  bool active = false;
+  u64 total_wait_ns = 0;
+  u32 buffer_size = 0;
+};
+
 class NetPlayUI
 {
 public:
@@ -103,6 +111,8 @@ public:
   std::string revision;
   u32 ping = 0;
   SyncIdentifierComparison game_status = SyncIdentifierComparison::Unknown;
+  bool ready = false;
+  u8 controller_count = 1;
 
   bool IsHost() const { return pid == 1; }
 };
@@ -110,14 +120,22 @@ public:
 class NetPlayClient : public Common::TraversalClientClient
 {
 public:
+  static InputWaitTelemetry GetInputWaitTelemetry();
+
   void ThreadFunc();
   void SendAsync(sf::Packet&& packet, u8 channel_id = DEFAULT_CHANNEL);
 
   NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog, std::string name,
-                const NetTraversalConfig& traversal_config);
+                const NetTraversalConfig& traversal_config, u8 controller_count = 1);
   ~NetPlayClient() override;
 
   std::vector<const Player*> GetPlayers();
+  std::vector<Player> GetPlayersSnapshot();
+  PadMappingArray GetWiimoteMappingSnapshot();
+  u8 GetAssignedControllerCount();
+  void SetLocalControllerCount(u8 count);
+  void SetReady(bool ready);
+  ConnectionError GetConnectionError() const { return m_connection_error; }
   const NetSettings& GetNetSettings() const;
 
   // Called from the GUI thread.
@@ -220,6 +238,8 @@ protected:
   // many incoming input packets need to be queued up before the client starts
   // speeding up the game to drain the buffer.
   unsigned int m_target_buffer_size = 20;
+  std::atomic<u64> m_total_input_wait_ns{0};
+  std::atomic<u32> m_telemetry_buffer_size{20};
   bool m_host_input_authority = false;
   PlayerId m_current_golfer = 1;
 
@@ -345,6 +365,8 @@ private:
 
   u64 m_initial_rtc = 0;
   u32 m_timebase_frame = 0;
+  u8 m_local_controller_count = 1;
+  ConnectionError m_connection_error = ConnectionError::NoError;
 
   std::unique_ptr<IOS::HLE::FS::FileSystem> m_wii_sync_fs;
   std::vector<u64> m_wii_sync_titles;

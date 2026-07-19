@@ -29,6 +29,9 @@ enum class CPUCore;
 
 namespace NetPlay
 {
+void SetCompatibilityFingerprint(std::string fingerprint);
+const std::string& GetCompatibilityFingerprint();
+
 struct NetSettings
 {
   bool cpu_thread = false;
@@ -153,6 +156,7 @@ enum class MessageID : u8
   PadBuffer = 0x62,
   PadHostData = 0x63,
   GBAConfig = 0x64,
+  PadBufferRequest = 0x65,
 
   WiimoteData = 0x70,
   WiimoteMapping = 0x71,
@@ -198,7 +202,9 @@ enum class ConnectionError : u8
   ServerFull = 1,
   GameRunning = 2,
   VersionMismatch = 3,
-  NameTooLong = 4
+  NameTooLong = 4,
+  CompatibilityMismatch = 5,
+  RoomFull = 6
 };
 
 enum class SyncSaveDataID : u8
@@ -231,6 +237,7 @@ enum : u8
 {
   DEFAULT_CHANNEL,
   CHUNKED_DATA_CHANNEL,
+  INPUT_CHANNEL,
   CHANNEL_COUNT
 };
 
