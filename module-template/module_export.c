@@ -27,8 +27,9 @@ void moderngekko_module_signal_host_event(CPUState* ctx, u32 event_id)
 static int chassis_dispatch(CPUState* ctx, u32 address)
 {
     // Sparse module hooks are compiled into their exact generated PC labels.
-    // Dispatch therefore stays identical for patched and unpatched modules.
-    return dolrecomp_dispatch(ctx, address);
+    // The public dispatcher also checks explicit host replacements before it
+    // enters original code and resolves physical MEM1 aliases.
+    return dolrecomp_call(ctx, address);
 }
 
 static void chassis_on_state_loaded(CPUState* ctx)

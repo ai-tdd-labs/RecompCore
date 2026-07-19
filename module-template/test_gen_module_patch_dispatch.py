@@ -59,10 +59,10 @@ class PatchManifestTest(unittest.TestCase):
 
 
 class TemplateDispatchTest(unittest.TestCase):
-    def test_staticrecomp_template_never_uses_standalone_host_call_wrapper(self) -> None:
+    def test_staticrecomp_template_uses_the_public_standalone_dispatcher(self) -> None:
         template = (Path(__file__).parent / "module_export.c").read_text()
-        self.assertNotIn("dolrecomp_call(ctx, address)", template)
-        self.assertEqual(template.count("dolrecomp_dispatch(ctx, address)"), 1)
+        self.assertEqual(template.count("dolrecomp_call(ctx, address)"), 1)
+        self.assertNotIn("dolrecomp_dispatch(ctx, address)", template)
         self.assertNotIn("module_patch_dispatch.inc", template)
 
     def test_host_event_is_optional_and_carries_guest_timebase(self) -> None:
