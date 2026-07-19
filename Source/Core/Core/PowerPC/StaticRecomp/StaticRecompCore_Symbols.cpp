@@ -10,6 +10,9 @@
 
 #include "Common/Config/Config.h"
 #include "Core/Config/StaticRecompSettings.h"
+#include "Core/CoreTiming.h"
+#include "Core/Movie.h"
+#include "Core/System.h"
 
 #if defined(_MSC_VER)
 #define STATICRECOMP_NOINLINE __declspec(noinline)
@@ -106,10 +109,16 @@ void StaticRecompCore::TraceFunctionEntry()
     return;
 
   ++m_traced_function_entries;
+  const auto& system = Core::System::GetInstance();
+  const auto& movie = system.GetMovie();
   std::fprintf(stderr,
-               "[staticrecomp:function] pc=0x%08X lr=0x%08X name=%s "
+               "[staticrecomp:function] movie_frame=%llu movie_input=%llu core_tick=%llu "
+               "pc=0x%08X lr=0x%08X name=%s r3=0x%08X r4=0x%08X r5=0x%08X r6=0x%08X "
                "f1=%.9g f2=%.9g f3=%.9g f4=%.9g\n",
-               m_guest.pc, m_guest.lr, symbol->second.c_str(), m_guest.fpr[1], m_guest.fpr[2],
-               m_guest.fpr[3], m_guest.fpr[4]);
+               static_cast<unsigned long long>(movie.GetCurrentFrame()),
+               static_cast<unsigned long long>(movie.GetCurrentInputCount()),
+               static_cast<unsigned long long>(system.GetCoreTiming().GetTicks()), m_guest.pc,
+               m_guest.lr, symbol->second.c_str(), m_guest.gpr[3], m_guest.gpr[4], m_guest.gpr[5],
+               m_guest.gpr[6], m_guest.fpr[1], m_guest.fpr[2], m_guest.fpr[3], m_guest.fpr[4]);
   staticrecomp_symbol_trace_probe(&m_guest, m_guest.pc, symbol->second.c_str());
 }
