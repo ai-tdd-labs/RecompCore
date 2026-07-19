@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gen_module_patch_dispatch import generate, parse_addresses
+from gen_module_patch_dispatch import generate, parse_addresses, parse_coverage
 
 
 class PatchManifestTest(unittest.TestCase):
@@ -56,6 +56,15 @@ class PatchManifestTest(unittest.TestCase):
                 self.header,
                 self.root / "dispatch.inc",
             )
+
+    def test_accepts_the_chunk_dispatch_coverage_form_emitted_by_dolrecomp(self) -> None:
+        header = self.root / "chunk-generated.h"
+        header.write_text(
+            "u32 offset = address - 0x800056C0u;\n"
+            "if (offset < 0x003109E0u && (offset & 3u) == 0u) {}\n"
+        )
+        self.assertEqual(parse_coverage(header), [(0x800056C0, 0x803160A0)])
+        generate(self.manifest("0x801CEBDC\n"), header, self.root / "dispatch.inc")
 
 
 class TemplateDispatchTest(unittest.TestCase):

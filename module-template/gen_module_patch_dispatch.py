@@ -12,6 +12,10 @@ ADDRESS_RE = re.compile(r"0x[0-9A-Fa-f]{8}")
 COVERAGE_RE = re.compile(
     r"address >= (0x[0-9A-Fa-f]+)u && address < (0x[0-9A-Fa-f]+)u"
 )
+OFFSET_COVERAGE_RE = re.compile(
+    r"offset = address - (0x[0-9A-Fa-f]+)u;\s*"
+    r"if \(offset < (0x[0-9A-Fa-f]+)u"
+)
 
 
 def parse_addresses(path: Path) -> list[int]:
@@ -46,6 +50,10 @@ def parse_coverage(path: Path) -> list[tuple[int, int]]:
         (int(start, 16), int(end, 16))
         for start, end in COVERAGE_RE.findall(path.read_text())
     ]
+    coverage.extend(
+        (int(start, 16), int(start, 16) + int(size, 16))
+        for start, size in OFFSET_COVERAGE_RE.findall(path.read_text())
+    )
     if not coverage:
         raise ValueError(f"{path}: no DolRecomp coverage ranges found")
     return coverage
