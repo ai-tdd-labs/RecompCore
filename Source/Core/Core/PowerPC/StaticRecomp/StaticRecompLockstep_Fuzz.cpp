@@ -185,7 +185,18 @@ double RandomFloatValue(FuzzRandom& random, u32 slot, u32 seed_index)
       0xfff0000000000000ull, 0x7ff8000000000001ull, 0xfff8000000000042ull,
   };
   if (((slot + seed_index) % 3u) != 0u)
-    return DoubleFromBits(edges[(slot * 5u + seed_index) % edges.size()]);
+  {
+    u64 bits = edges[(slot * 5u + seed_index) % edges.size()];
+    // FPSCR.NI flushes denormal results.  The direct-register fuzzer must not
+    // inject a denormal value after it has declared NI active: on host FPUs
+    // that turns the harness setup, rather than the guest instruction, into
+    // the source of the result. Dedicated load/store tests cover transitions
+    // into NI mode separately.
+    if ((seed_index & 4u) != 0u && (bits & (0x7ffull << 52)) == 0 &&
+        (bits & ((1ull << 52) - 1)) != 0)
+      bits &= 1ull << 63;
+    return DoubleFromBits(bits);
+  }
 
   // Force a finite exponent while retaining a broad mantissa/sign spread.
   u64 bits = random.Next64();

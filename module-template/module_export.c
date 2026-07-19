@@ -35,7 +35,7 @@ static int chassis_dispatch(CPUState* ctx, u32 address)
 static void chassis_on_state_loaded(CPUState* ctx)
 {
     // Re-arm host FP rounding/flush state from the freshly loaded guest FPSCR.
-    ppc_fpscr_updated(ctx);
+    ppc_fpscr_control_updated(ctx);
 }
 
 #include "module_tables.inc"
