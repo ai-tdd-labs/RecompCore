@@ -97,15 +97,24 @@ class TemplateDispatchTest(unittest.TestCase):
         self.assertIn("#ifndef DOLRECOMP_PATCH_PC", emitter)
         self.assertIn("DOLRECOMP_PATCH_PC(ctx, 0x%08Xu);", emitter)
 
-    def test_dolrecomp_keeps_legacy_host_call_wrapper_around_raw_dispatch(self) -> None:
-        emitter = (Path(__file__).parents[1] / "DolRecomp" / "src" / "main.c").read_text()
-        raw = 'static inline int dolrecomp_dispatch(CPUState* ctx, u32 address)'
-        wrapper = 'static inline int dolrecomp_call(CPUState* ctx, u32 address)'
-        self.assertIn(raw, emitter)
-        self.assertIn(wrapper, emitter)
-        self.assertIn('if (ppc_host_call(ctx, address)) return 1;', emitter)
-        self.assertIn('return dolrecomp_dispatch(ctx, address);', emitter)
-        self.assertLess(emitter.index(raw), emitter.index(wrapper))
+    def test_dolrecomp_dispatch_checks_host_replacements_before_original_code(self) -> None:
+        emitter = (
+            Path(__file__).parents[1]
+            / "DolRecomp"
+            / "src"
+            / "backend"
+            / "dispatch.c"
+        ).read_text()
+        host_call = (
+            'if (ctx->host_call && ppc_host_call(ctx, address)) return 1;'
+        )
+        original_call = (
+            'if (dolrecomp_call_original(ctx, address)) return 1;'
+        )
+        self.assertIn('static inline int dolrecomp_call(CPUState* ctx, u32 address)', emitter)
+        self.assertIn(host_call, emitter)
+        self.assertIn(original_call, emitter)
+        self.assertLess(emitter.index(host_call), emitter.index(original_call))
 
 
 if __name__ == "__main__":
