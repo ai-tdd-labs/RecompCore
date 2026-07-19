@@ -347,6 +347,7 @@ f64 make_quiet(f64 value) {
 }
 
 f32 force_single(const CPUState* cpu, f64 value) {
+    ppc_arm_host_fp_mode((CPUState*)cpu);
     if (cpu->fpscr & FPSCR_NI_BIT) {
         u64 no_sign = f64_bits(value) & 0x7FFFFFFFFFFFFFFFull;
         if (no_sign < 0x3810000000000000ull) {
@@ -358,7 +359,7 @@ f32 force_single(const CPUState* cpu, f64 value) {
 }
 
 f64 force_double(const CPUState* cpu, f64 d) {
-    (void)cpu;
+    ppc_arm_host_fp_mode((CPUState*)cpu);
     return d;
 }
 
@@ -381,6 +382,7 @@ f64 force_25bit_c(f64 d) {
 }
 
 FPRes ni_add(CPUState* cpu, f64 a, f64 b) {
+    ppc_arm_host_fp_mode(cpu);
     FPRes result = {a + b, 0};
 
     if (isnan(result.value)) {
@@ -403,6 +405,7 @@ FPRes ni_add(CPUState* cpu, f64 a, f64 b) {
 }
 
 FPRes ni_sub(CPUState* cpu, f64 a, f64 b) {
+    ppc_arm_host_fp_mode(cpu);
     FPRes result = {a - b, 0};
 
     if (isnan(result.value)) {
@@ -425,6 +428,7 @@ FPRes ni_sub(CPUState* cpu, f64 a, f64 b) {
 }
 
 FPRes ni_mul(CPUState* cpu, f64 a, f64 b) {
+    ppc_arm_host_fp_mode(cpu);
     FPRes result = {a * b, 0};
 
     if (isnan(result.value)) {
@@ -445,6 +449,7 @@ FPRes ni_mul(CPUState* cpu, f64 a, f64 b) {
 }
 
 FPRes ni_div(CPUState* cpu, f64 a, f64 b) {
+    ppc_arm_host_fp_mode(cpu);
     FPRes result = {a / b, 0};
 
     if (isinf(result.value)) {
@@ -476,6 +481,7 @@ FPRes ni_div(CPUState* cpu, f64 a, f64 b) {
 }
 
 FPRes ni_madd_msub(CPUState* cpu, f64 a, f64 c, f64 b, bool sub, bool single) {
+    ppc_arm_host_fp_mode(cpu);
     FPRes result = {0.0, 0};
 
     if (!single) {
