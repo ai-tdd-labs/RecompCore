@@ -201,6 +201,21 @@ void StaticRecompCore::Run()
   const bool measure_native_wall = timeline_enabled && m_measure_native_wall;
   const bool sample_native_pcs = m_sample_native_pcs;
 
+  // Opcode fuzzing owns this process: it feeds deterministic synthetic CPU
+  // states directly into the generated module and reuses the lockstep shadow
+  // as the independent Dolphin-interpreter oracle. Do this before the DOL's
+  // intentionally stationary entry point enters the normal run loop.
+  if (m_lockstep_verifier->IsOpcodeFuzzRequested())
+  {
+    if (!m_opcode_fuzz_ran)
+    {
+      m_opcode_fuzz_ran = true;
+      RunOpcodeFuzz();
+    }
+    m_system.GetCPU().Break();
+    return;
+  }
+
   while (*state_ptr == CPU::State::Running)
   {
     core_timing.Advance();
@@ -399,6 +414,20 @@ void StaticRecompCore::Run()
       }
     } while (ppc.downcount > 0 && *state_ptr == CPU::State::Running);
   }
+}
+
+bool StaticRecompCore::RunOpcodeFuzz()
+{
+  auto& memory = m_system.GetMemory();
+  m_guest.ram = memory.GetRAM();
+  m_guest.ram_size = memory.GetRamSizeReal();
+  m_guest.exram = memory.GetEXRAM();
+  m_guest.exram_size = memory.GetExRamSizeReal();
+  InitLookupTable(m_guest.ram_size, m_guest.exram_size);
+
+  const std::string game_id = SConfig::GetInstance().GetGameID();
+  m_module_active = m_module && (game_id.empty() || game_id == m_module->game_id);
+  return m_lockstep_verifier->RunOpcodeFuzz();
 }
 
 void StaticRecompCore::SingleStep()

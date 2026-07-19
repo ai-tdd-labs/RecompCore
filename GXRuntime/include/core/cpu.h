@@ -152,9 +152,18 @@ extern void* g_mem_write_journal_user;
 
 static GXRUNTIME_ALWAYS_INLINE u8* get_ram_ptr(CPUState* cpu, u32 addr, u32 size, u32* out_offset) {
     u32 masked_addr = addr & ~0x40000000u;
+
+    // PPC code may use the physical MEM1 alias while translation is disabled
+    // during early boot. Accept that alias before the cached/uncached virtual
+    // ranges below.
+    if (cpu->ram != NULL && masked_addr <= cpu->ram_size &&
+        size <= cpu->ram_size - masked_addr) {
+        if (out_offset) *out_offset = masked_addr;
+        return cpu->ram + masked_addr;
+    }
     
     // Check MEM2 (EXRAM) first as it is much more common in Wii titles
-    if (cpu->exram) {
+    if (cpu->exram && cpu->exram_size >= size) {
         u32 offset = masked_addr - 0x90000000u;
         if (offset <= cpu->exram_size - size) {
             if (out_offset) *out_offset = (u32)-1;
@@ -164,7 +173,7 @@ static GXRUNTIME_ALWAYS_INLINE u8* get_ram_ptr(CPUState* cpu, u32 addr, u32 size
     
     // Check MEM1
     u32 offset = masked_addr - 0x80000000u;
-    if (offset <= cpu->ram_size - size) {
+    if (cpu->ram != NULL && cpu->ram_size >= size && offset <= cpu->ram_size - size) {
         if (out_offset) *out_offset = offset;
         return cpu->ram + offset;
     }

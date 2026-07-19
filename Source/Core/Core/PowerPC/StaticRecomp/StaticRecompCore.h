@@ -61,6 +61,9 @@ public:
 
   void Run() override;
   void SingleStep() override;
+  // Diagnostic entry used by ModernGekko's synthetic opcode bank after the
+  // executable has been loaded but before the normal host loop starts.
+  bool RunOpcodeFuzz();
   bool IsModuleActive() const;
   bool ArmHostEvent(u32 event_id);
   bool TakeHostEvent(StaticRecompHostEvent* event);
@@ -250,6 +253,7 @@ private:
   // last hit short-circuits the chunk binary search on the hot path.
   mutable u32 m_last_chunk_index = 0;
 
+  bool m_opcode_fuzz_ran = false;
   u32 m_idle_pc = 0;
 };
 

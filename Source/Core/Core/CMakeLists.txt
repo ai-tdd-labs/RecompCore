@@ -619,6 +619,7 @@ add_library(core
   PowerPC/StaticRecomp/StaticRecompModuleSource.h
   PowerPC/StaticRecomp/StaticRecompLockstep.cpp
   PowerPC/StaticRecomp/StaticRecompLockstep.h
+  PowerPC/StaticRecomp/StaticRecompLockstep_Fuzz.cpp
   PowerPC/StaticRecomp/StaticRecompLockstep_Trampolines.cpp
   PowerPC/StaticRecomp/StaticRecompLockstep_Check.cpp
   PowerPC/PPCAnalyst.cpp

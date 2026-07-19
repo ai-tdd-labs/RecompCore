@@ -124,6 +124,8 @@ public:
   bool ShouldCheck(u32 address) const;
   void Prepare(const CPUState& guest);
   void Verify(const CPUState& guest);
+  bool IsOpcodeFuzzRequested() const;
+  bool RunOpcodeFuzz();
 
 private:
   static void LsJournalTrampoline(u32 offset, u32 size, void* user);

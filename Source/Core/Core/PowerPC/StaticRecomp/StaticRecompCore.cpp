@@ -192,6 +192,11 @@ void StaticRecompCore::Init()
                m_measure_native_wall ? 1u : 0u, m_sample_native_pcs ? 1u : 0u);
   m_lockstep_verifier = std::make_unique<StaticRecompLockstep::StaticRecompLockstepVerifier>(*this);
   m_lockstep_verifier->Init();
+  if (m_lockstep_verifier->IsOpcodeFuzzRequested())
+  {
+    m_opcode_fuzz_ran = true;
+    (void)RunOpcodeFuzz();
+  }
 
   // Strict-native runs never execute the compatibility JIT. Constructing it
   // anyway reserves a large code cache, and Dolphin cache invalidations then
