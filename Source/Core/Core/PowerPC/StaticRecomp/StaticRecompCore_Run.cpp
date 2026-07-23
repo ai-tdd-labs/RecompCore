@@ -174,6 +174,8 @@ void StaticRecompCore::Run()
 
   const std::string initial_game_id = SConfig::GetInstance().GetGameID();
   m_module_active = m_module && (initial_game_id.empty() || initial_game_id == m_module->game_id);
+  if (m_module_active)
+    RefreshRelBindings();
 
   if (!m_module_active)
   {
@@ -233,12 +235,33 @@ void StaticRecompCore::Run()
       return;
     }
     int native_chunk_index = -1;
+    RelChunkDispatch rel_chunk{};
+    bool native_is_rel = false;
+    const auto resolve_native = [&](u32 address) {
+      native_chunk_index = DispatchableChunkAt(address);
+      native_is_rel = false;
+      if (native_chunk_index >= 0)
+        return true;
+      const bool can_be_rel =
+          address >= 0x80000000u && m_module &&
+          m_module->abi_version >= STATICRECOMP_ABI_VERSION_V4 &&
+          m_module->rel_modules && m_module->num_rel_modules != 0;
+      // Refresh before looking up an REL address. OSUnlink can unload a module
+      // and OSLink can reuse the same address for a different one; accepting a
+      // cached hit first would execute one stale chunk from the old module.
+      if (can_be_rel && RefreshRelBindings() && LookupRelChunk(address, &rel_chunk))
+      {
+        native_is_rel = true;
+        return true;
+      }
+      return false;
+    };
 
     do
     {
       // MSR.FP needs no gate here: generated FPU instructions raise the
       // FP-unavailable exception themselves (ppc_fp_available).
-      if (m_module_active && (native_chunk_index = DispatchableChunkAt(ppc.pc)) >= 0)
+      if (m_module_active && resolve_native(ppc.pc))
       {
         const TimePoint native_started = measure_native_wall ? Clock::now() : TimePoint{};
         SyncIn();
@@ -256,7 +279,12 @@ void StaticRecompCore::Run()
           // The chassis lookup already resolved and SMC-verified this chunk.
           // Enter it directly instead of asking the module dispatcher to map
           // the same guest address a second time.
-          if (m_use_generic_module_dispatch)
+          if (native_is_rel)
+          {
+            rel_chunk.function(&m_guest, rel_chunk.canonical_pc, rel_chunk.section_delta);
+            ++m_native_rel_dispatches;
+          }
+          else if (m_use_generic_module_dispatch)
             m_module->dispatch(&m_guest, m_guest.pc);
           else
             m_module->chunk_functions[native_chunk_index](&m_guest);
@@ -302,8 +330,7 @@ void StaticRecompCore::Run()
           }
           if ((ppc.Exceptions & SYNC_EXCEPTION_MASK) != 0)
             break;  // Hook-raised synchronous exception: deliver via Dolphin below.
-        } while (m_module_active &&
-                 (native_chunk_index = FastDispatchableChunkAt(m_guest.pc)) >= 0 &&
+        } while (m_module_active && resolve_native(m_guest.pc) &&
                  ppc.downcount > 0 && *state_ptr == CPU::State::Running);
         SyncOut();
         if (measure_native_wall)
@@ -398,9 +425,9 @@ void StaticRecompCore::Run()
           {
             ppc.downcount -= interpreter.SingleStepInner();
             ++m_fallback_steps;
-          } while (!(m_module_active && DispatchableAt(ppc.pc)) && ppc.downcount > 0 &&
+          } while (!(m_module_active && resolve_native(ppc.pc)) && ppc.downcount > 0 &&
                    *state_ptr == CPU::State::Running);
-          if (m_module_active && FastDispatchableAt(ppc.pc))
+          if (m_module_active && resolve_native(ppc.pc))
           {
             ++m_native_reentries;
             ++m_reentry_pc_counts[ppc.pc];

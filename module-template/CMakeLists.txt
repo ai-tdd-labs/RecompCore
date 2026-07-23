@@ -11,6 +11,19 @@ project(recompcore_module C)
 
 set(CMAKE_C_STANDARD 11)
 option(MODERNGEKKO_ENABLE_LTO "Use link-time optimization for release modules" ON)
+option(MODERNGEKKO_FAST_BUILD "Prefer fast compilation over generated-code optimization" OFF)
+set(MODERNGEKKO_OPTIMIZATION_LEVEL "" CACHE STRING
+    "Generated-code optimization level (0, 1, or 2)")
+if(MODERNGEKKO_OPTIMIZATION_LEVEL STREQUAL "")
+  if(MODERNGEKKO_FAST_BUILD)
+    set(MODERNGEKKO_OPTIMIZATION_LEVEL 0)
+  else()
+    set(MODERNGEKKO_OPTIMIZATION_LEVEL 1)
+  endif()
+endif()
+if(NOT MODERNGEKKO_OPTIMIZATION_LEVEL MATCHES "^[012]$")
+  message(FATAL_ERROR "MODERNGEKKO_OPTIMIZATION_LEVEL must be 0, 1, or 2")
+endif()
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -46,6 +59,17 @@ add_custom_command(
   COMMENT "Generating module_tables.inc")
 
 file(GLOB CHUNK_SOURCES "${GENERATED_DIR}/chunks/*.c")
+file(GLOB_RECURSE REL_CHUNK_SOURCES
+     CONFIGURE_DEPENDS "${GENERATED_DIR}/rels/*/chunks/*.c")
+set(REL_MODULE_TABLES "${CMAKE_CURRENT_BINARY_DIR}/rel_module_tables.inc")
+add_custom_command(
+  OUTPUT "${REL_MODULE_TABLES}"
+  COMMAND Python3::Interpreter
+          "${CMAKE_CURRENT_SOURCE_DIR}/gen_rel_module_tables.py"
+          "${GENERATED_DIR}" "${REL_MODULE_TABLES}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gen_rel_module_tables.py"
+          ${REL_CHUNK_SOURCES}
+  COMMENT "Generating rel_module_tables.inc")
 set(MODULE_PATCH_SOURCE "${GENERATED_DIR}/module_patch.c")
 set(MODULE_PATCH_ADDRESSES "${GENERATED_DIR}/module_patch_addresses.txt")
 set(MODULE_PATCH_SOURCES)
@@ -74,6 +98,7 @@ endif()
 add_library(${MODULE_NAME} SHARED
   module_export.c
   "${MODULE_TABLES}"
+  "${REL_MODULE_TABLES}"
   "${GXRUNTIME_DIR}/src/core/cpu.c"
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter.c"
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter_table.c"
@@ -81,10 +106,13 @@ add_library(${MODULE_NAME} SHARED
   "${GXRUNTIME_DIR}/src/core/cpu_interpreter_integer.c"
   ${MODULE_PATCH_POINTS}
   ${MODULE_PATCH_SOURCES}
-  ${CHUNK_SOURCES})
+  ${CHUNK_SOURCES}
+  ${REL_CHUNK_SOURCES})
 
 set_target_properties(${MODULE_NAME} PROPERTIES PREFIX "" OUTPUT_NAME "${MODULE_NAME}" UNITY_BUILD OFF)
 set_source_files_properties("${MODULE_TABLES}" PROPERTIES HEADER_FILE_ONLY TRUE GENERATED TRUE)
+set_source_files_properties("${REL_MODULE_TABLES}"
+                            PROPERTIES HEADER_FILE_ONLY TRUE GENERATED TRUE)
 if(MODULE_PATCH_POINTS)
   set_source_files_properties("${MODULE_PATCH_POINTS}"
                               PROPERTIES HEADER_FILE_ONLY TRUE GENERATED TRUE)
@@ -117,7 +145,9 @@ endif()
 # Keep each generated chunk as its own translation unit. Clang uses ThinLTO and
 # lld; GCC deliberately avoids LTO until the differential parity gate covers it.
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
-  target_compile_options(${MODULE_NAME} PRIVATE -O2 -fvisibility=hidden
+  set(MODERNGEKKO_MODULE_OPTIMIZATION
+      "-O${MODERNGEKKO_OPTIMIZATION_LEVEL}")
+  target_compile_options(${MODULE_NAME} PRIVATE ${MODERNGEKKO_MODULE_OPTIMIZATION} -fvisibility=hidden
                          -ffp-contract=off -fno-fast-math)
   if(MODERNGEKKO_ENABLE_LTO)
     target_compile_options(${MODULE_NAME} PRIVATE -flto=thin)
@@ -134,8 +164,15 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     target_link_options(${MODULE_NAME} PRIVATE -fuse-ld=lld -Wl,--thinlto-jobs=4)
   endif()
 elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-  target_compile_options(${MODULE_NAME} PRIVATE -O2 -fvisibility=hidden
+  set(MODERNGEKKO_MODULE_OPTIMIZATION
+      "-O${MODERNGEKKO_OPTIMIZATION_LEVEL}")
+  target_compile_options(${MODULE_NAME} PRIVATE ${MODERNGEKKO_MODULE_OPTIMIZATION} -fvisibility=hidden
                          -ffp-contract=off -fno-fast-math)
 elseif(MSVC)
+  if(MODERNGEKKO_FAST_BUILD)
+    target_compile_options(${MODULE_NAME} PRIVATE /Od)
+  else()
+    target_compile_options(${MODULE_NAME} PRIVATE /O2)
+  endif()
   target_compile_options(${MODULE_NAME} PRIVATE /fp:strict)
 endif()

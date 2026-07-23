@@ -77,6 +77,62 @@ bool ChunksTileCode(const StaticRecompModuleDesc& desc)
   }
   return chunk == desc.num_chunk_ranges;
 }
+
+bool RelCatalogIsValid(const StaticRecompModuleDesc& desc)
+{
+  if (desc.abi_version < STATICRECOMP_ABI_VERSION_V4)
+    return true;
+  if (desc.num_rel_modules == 0)
+    return desc.rel_modules == nullptr;
+  if (!desc.rel_modules)
+    return false;
+
+  for (u32 module_index = 0; module_index < desc.num_rel_modules; ++module_index)
+  {
+    const auto& module = desc.rel_modules[module_index];
+    if (module.module_id == 0 || !module.executable_sections ||
+        module.num_executable_sections == 0)
+      return false;
+    for (u32 previous = 0; previous < module_index; ++previous)
+    {
+      if (desc.rel_modules[previous].module_id == module.module_id)
+        return false;
+    }
+    for (u32 section_index = 0; section_index < module.num_executable_sections;
+         ++section_index)
+    {
+      const auto& section = module.executable_sections[section_index];
+      const u64 canonical_end =
+          static_cast<u64>(section.canonical_start) + section.size;
+      if (section.size == 0 || !section.chunk_ranges || section.num_chunk_ranges == 0 ||
+          !section.chunk_functions ||
+          static_cast<u64>(section.offset) + section.size > UINT32_MAX ||
+          canonical_end > UINT32_MAX)
+        return false;
+      if (section_index != 0)
+      {
+        const auto& previous = module.executable_sections[section_index - 1];
+        if (previous.section_index > section.section_index ||
+            (previous.section_index == section.section_index &&
+             static_cast<u64>(previous.offset) + previous.size > section.offset))
+          return false;
+      }
+      u32 cursor = section.canonical_start;
+      for (u32 chunk = 0; chunk < section.num_chunk_ranges; ++chunk)
+      {
+        if (section.chunk_ranges[chunk].start != cursor ||
+            section.chunk_ranges[chunk].start >= section.chunk_ranges[chunk].end ||
+            section.chunk_ranges[chunk].end > canonical_end ||
+            section.chunk_functions[chunk] == nullptr)
+          return false;
+        cursor = section.chunk_ranges[chunk].end;
+      }
+      if (cursor != canonical_end)
+        return false;
+    }
+  }
+  return true;
+}
 }  // namespace
 
 bool StaticRecompCore::IsModuleActive() const
@@ -240,7 +296,8 @@ void StaticRecompCore::Shutdown()
   g_static_recomp_core = nullptr;
   std::fprintf(stderr,
                "[staticrecomp] shutdown: native=%llu fallback=%llu native_exc=%llu hook_fb=%llu "
-               "native_shims=%llu native_aliases=%llu "
+               "native_shims=%llu native_aliases=%llu native_rel=%llu "
+               "rel_links=%llu rel_unlinks=%llu "
                "fallback_entries=%llu native_reentries=%llu first_fallback=0x%08X "
                "first_reentry=0x%08X smc_failed=%u verifications=%llu reverify_events=%llu "
                "bursts=%llu charged_cycles=%llu idle_skips=%llu traced_functions=%llu\n",
@@ -249,6 +306,9 @@ void StaticRecompCore::Shutdown()
                (unsigned long long)m_hook_fallback_instructions,
                (unsigned long long)m_native_shim_instructions,
                (unsigned long long)m_native_alias_entries,
+               (unsigned long long)m_native_rel_dispatches,
+               (unsigned long long)m_rel_link_generations,
+               (unsigned long long)m_rel_unlink_generations,
                (unsigned long long)m_fallback_entries,
                (unsigned long long)m_native_reentries, m_first_fallback_pc,
                m_first_native_reentry_pc, m_failed_chunks,
@@ -281,6 +341,7 @@ void StaticRecompCore::Shutdown()
   m_lockstep_verifier.reset();
   m_block_cache.Shutdown();
   m_module = nullptr;
+  m_rel_bindings.clear();
   m_take_host_event = nullptr;
   if (m_library.IsOpen())
     m_library.Close();
@@ -330,8 +391,9 @@ void StaticRecompCore::LoadModule()
 
   if (!desc)
     return reject("missing or null " STATICRECOMP_GET_MODULE_SYMBOL);
-  if (desc->abi_version != STATICRECOMP_ABI_VERSION)
-    return reject(fmt::format("abi_version {} != {}", desc->abi_version, STATICRECOMP_ABI_VERSION));
+  if (desc->abi_version != STATICRECOMP_ABI_VERSION &&
+      desc->abi_version != STATICRECOMP_ABI_VERSION_V3)
+    return reject(fmt::format("unsupported abi_version {}", desc->abi_version));
   if (desc->cpu_abi_version != GXRUNTIME_CPU_ABI_VERSION)
     return reject(fmt::format("cpu_abi_version {} != {}", desc->cpu_abi_version,
                               GXRUNTIME_CPU_ABI_VERSION));
@@ -351,6 +413,8 @@ void StaticRecompCore::LoadModule()
     return reject("no chunk ranges/hashes/functions (required for direct verified dispatch)");
   if (!ChunksTileCode(*desc))
     return reject("chunk ranges do not exactly tile code ranges");
+  if (!RelCatalogIsValid(*desc))
+    return reject("malformed REL catalog");
   if (!AddressIsCovered(desc->code_ranges, desc->num_code_ranges, desc->entry_point))
     return reject("entry point is not covered by the module");
   if (!game_id.empty() && game_id != desc->game_id)
@@ -367,6 +431,7 @@ void StaticRecompCore::LoadModule()
   m_lookup_ram_size = 0;
   m_lookup_exram_size = 0;
   m_chunk_lookup_table.clear();
+  m_rel_bindings.clear();
 
   // Generated native code currently treats guest instruction-cache
   // operations as coherence notifications rather than modelling the Gekko

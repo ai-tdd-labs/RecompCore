@@ -131,6 +131,12 @@ void StaticRecompCore::OnICacheInvalidate(u32 address, u32 length)
     m_fallback_jit->GetBlockCache()->InvalidateICache(address, length, false);
   }
 
+  if (m_module_active && m_module &&
+      m_module->abi_version >= STATICRECOMP_ABI_VERSION_V4)
+  {
+    RefreshRelBindings();
+  }
+
   if (!m_module_active || length == 0)
     return;
   const u32 last = address + (length - 1u);

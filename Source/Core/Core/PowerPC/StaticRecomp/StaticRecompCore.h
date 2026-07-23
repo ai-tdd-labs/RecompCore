@@ -151,6 +151,28 @@ private:
   void ReportNativeFallbackViolation(const char* kind, u32 pc, u32 raw = 0);
   void PollArmedHostEvent(u64 core_ticks);
 
+  struct RelBinding
+  {
+    const StaticRecompRelModuleDesc* module = nullptr;
+    u32 guest_module = 0;
+    u64 generation = 0;
+    std::vector<u32> section_bases;
+  };
+
+  struct RelChunkDispatch
+  {
+    StaticRecompRelChunkFn function = nullptr;
+    u32 canonical_pc = 0;
+    intptr_t section_delta = 0;
+    u32 module_id = 0;
+    u32 section_index = 0;
+    u64 generation = 0;
+  };
+
+  bool RefreshRelBindings();
+  bool LookupRelChunk(u32 address, RelChunkDispatch* dispatch) const;
+  const StaticRecompRelModuleDesc* FindRelModule(u32 module_id) const;
+
   // D4 SMC guard, verify-on-entry model. Every chunk starts Unverified; the
   // first native dispatch into it hashes its guest RAM against the module's
   // recorded hash of the original text. An icache invalidation touching a
@@ -226,6 +248,9 @@ private:
   u64 m_hook_fallback_instructions = 0;
   u64 m_native_shim_instructions = 0;
   u64 m_native_alias_entries = 0;
+  u64 m_native_rel_dispatches = 0;
+  u64 m_rel_link_generations = 0;
+  u64 m_rel_unlink_generations = 0;
   u64 m_bursts = 0;          // SyncIn..SyncOut native runs (diagnostic)
   u64 m_charged_cycles = 0;  // cycles flushed from module charges (diagnostic)
   u64 m_native_wall_ns = 0;  // host time inside measured native bursts (timeline only)
@@ -252,6 +277,7 @@ private:
   // Dispatch locality: most control transfers stay inside one chunk, so the
   // last hit short-circuits the chunk binary search on the hot path.
   mutable u32 m_last_chunk_index = 0;
+  std::vector<RelBinding> m_rel_bindings;
 
   bool m_opcode_fuzz_ran = false;
   u32 m_idle_pc = 0;

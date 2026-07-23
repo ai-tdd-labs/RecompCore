@@ -24,13 +24,38 @@ extern "C" {
 
 #ifndef MODERNGEKKO_MODULE_ABI_H
 
-#define STATICRECOMP_ABI_VERSION 3u
+#define STATICRECOMP_ABI_VERSION 4u
+#define STATICRECOMP_ABI_VERSION_V3 3u
+#define STATICRECOMP_ABI_VERSION_V4 STATICRECOMP_ABI_VERSION
 
 typedef struct StaticRecompRange
 {
   u32 start;  // guest effective address, inclusive
   u32 end;    // guest effective address, exclusive
 } StaticRecompRange;
+
+typedef void (*StaticRecompRelChunkFn)(CPUState* ctx, u32 canonical_pc,
+                                       intptr_t section_delta);
+
+typedef struct StaticRecompRelExecutableSection
+{
+  u32 section_index;
+  u32 offset;
+  u32 size;
+  u32 canonical_start;
+  const StaticRecompRange* chunk_ranges;
+  u32 num_chunk_ranges;
+  const u64* chunk_hashes;
+  const u64* chunk_hash_masks;
+  const StaticRecompRelChunkFn* chunk_functions;
+} StaticRecompRelExecutableSection;
+
+typedef struct StaticRecompRelModuleDesc
+{
+  u32 module_id;
+  const StaticRecompRelExecutableSection* executable_sections;
+  u32 num_executable_sections;
+} StaticRecompRelModuleDesc;
 
 typedef void (*StaticRecompChunkFn)(CPUState* ctx);
 
@@ -74,6 +99,12 @@ typedef struct StaticRecompModuleDesc
   // has already resolved and verified the chunk before execution, so this
   // avoids repeating the module's address-to-chunk dispatch on every block.
   const StaticRecompChunkFn* chunk_functions;
+
+  // Optional ABI v4 REL catalog. The executable sections are section-relative;
+  // the chassis binds them to actual guest addresses when OSLink publishes an
+  // instance.
+  const StaticRecompRelModuleDesc* rel_modules;
+  u32 num_rel_modules;
 } StaticRecompModuleDesc;
 
 // The single symbol a module must export:

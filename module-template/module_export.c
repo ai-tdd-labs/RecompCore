@@ -39,6 +39,7 @@ static void chassis_on_state_loaded(CPUState* ctx)
 }
 
 #include "module_tables.inc"
+#include "rel_module_tables.inc"
 
 static const StaticRecompModuleDesc s_desc = {
     STATICRECOMP_ABI_VERSION,
@@ -56,6 +57,8 @@ static const StaticRecompModuleDesc s_desc = {
     MODULE_CHUNK_RANGE_COUNT,
     s_chunk_hashes,
     s_chunk_functions,
+    MODULE_REL_MODULES,
+    MODULE_REL_COUNT,
 };
 
 #if defined(_WIN32)
