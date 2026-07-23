@@ -183,7 +183,9 @@ void StaticRecompCore::HookInstructionFallback(CPUState* cpu, u32 raw, u32 cia)
       const u32 ea = (ra ? cpu->gpr[ra] : 0u) + cpu->gpr[rb];
       if (xo == 982u)
       {
-        system.GetJitInterface().InvalidateICacheLine(ea);
+        // Match Interpreter::icbi so interpreter fallback and native
+        // execution observe the same REL bytes after a load-address reuse.
+        ppc.iCache.Invalidate(system.GetMemory(), system.GetJitInterface(), ea);
       }
       // These bypass SingleStepInner, so charge Dolphin's PPCTables cost
       // here (icbi 4, dcbf/dcbst/dcbi 5); their emitted block cost is zero.

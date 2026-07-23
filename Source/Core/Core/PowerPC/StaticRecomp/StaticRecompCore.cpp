@@ -368,6 +368,15 @@ void StaticRecompCore::LoadModule()
   m_lookup_exram_size = 0;
   m_chunk_lookup_table.clear();
 
+  // Generated native code currently treats guest instruction-cache
+  // operations as coherence notifications rather than modelling the Gekko
+  // cache contents. Keep interpreter fallback on that same model. Games such
+  // as Wind Waker repeatedly load different RELs at the same guest addresses;
+  // leaving Dolphin's interpreter cache enabled can otherwise execute bytes
+  // from the previously loaded REL after native code has installed a new one.
+  m_system.GetPPCState().iCache.m_disable_icache = true;
+  Config::SetCurrent(Config::MAIN_DISABLE_ICACHE, true);
+
   std::fprintf(stderr, "[staticrecomp] module loaded: %s entry=0x%08X\n", path.c_str(),
                desc->entry_point);
   NOTICE_LOG_FMT(POWERPC,

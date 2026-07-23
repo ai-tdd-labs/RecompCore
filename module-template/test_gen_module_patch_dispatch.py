@@ -125,6 +125,27 @@ class TemplateDispatchTest(unittest.TestCase):
         self.assertIn(original_call, emitter)
         self.assertLess(emitter.index(host_call), emitter.index(original_call))
 
+    def test_native_module_keeps_rel_fallback_instruction_cache_coherent(self) -> None:
+        root = Path(__file__).parents[1]
+        core = (
+            root / "Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp"
+        ).read_text()
+        hooks = (
+            root
+            / "Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp"
+        ).read_text()
+
+        load = core[core.index("void StaticRecompCore::LoadModule()") :]
+        load = load[: load.index("void StaticRecompCore::ClearCache()")]
+        self.assertIn("iCache.m_disable_icache = true", load)
+        self.assertIn("Config::SetCurrent(Config::MAIN_DISABLE_ICACHE, true)", load)
+
+        fallback = hooks[hooks.index("void StaticRecompCore::HookInstructionFallback") :]
+        self.assertIn(
+            "ppc.iCache.Invalidate(system.GetMemory(), system.GetJitInterface(), ea)",
+            fallback,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
