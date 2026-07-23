@@ -246,10 +246,13 @@ void StaticRecompCore::Run()
           address >= 0x80000000u && m_module &&
           m_module->abi_version >= STATICRECOMP_ABI_VERSION_V4 &&
           m_module->rel_modules && m_module->num_rel_modules != 0;
-      // Refresh before looking up an REL address. OSUnlink can unload a module
-      // and OSLink can reuse the same address for a different one; accepting a
-      // cached hit first would execute one stale chunk from the old module.
-      if (can_be_rel && RefreshRelBindings() && LookupRelChunk(address, &rel_chunk))
+      // OSLink/OSUnlink invalidate the instruction cache after changing the
+      // live module queue. EmptyBlockCache routes that hardware event through
+      // OnICacheInvalidate(), which marks these bindings stale before newly
+      // installed code can execute. Re-scan once on the first subsequent REL
+      // lookup, after startup, or after a savestate cache reset.
+      if (can_be_rel && (m_rel_bindings_valid || RefreshRelBindings()) &&
+          LookupRelChunk(address, &rel_chunk))
       {
         native_is_rel = true;
         return true;

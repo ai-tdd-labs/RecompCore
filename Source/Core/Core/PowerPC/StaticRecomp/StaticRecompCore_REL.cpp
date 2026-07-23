@@ -35,11 +35,14 @@ const StaticRecompRelModuleDesc* StaticRecompCore::FindRelModule(u32 module_id) 
 
 bool StaticRecompCore::RefreshRelBindings()
 {
+  m_rel_bindings_valid = false;
+  ++m_rel_binding_refreshes;
   if (!m_module || m_module->abi_version < STATICRECOMP_ABI_VERSION_V4 ||
       !m_module->rel_modules || m_module->num_rel_modules == 0)
   {
     m_rel_unlink_generations += m_rel_bindings.size();
     m_rel_bindings.clear();
+    m_rel_bindings_valid = true;
     return true;
   }
 
@@ -156,6 +159,7 @@ bool StaticRecompCore::RefreshRelBindings()
     }
   }
   m_rel_bindings = std::move(next);
+  m_rel_bindings_valid = true;
   return true;
 }
 

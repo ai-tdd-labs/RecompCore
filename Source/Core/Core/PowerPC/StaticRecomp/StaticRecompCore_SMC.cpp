@@ -134,7 +134,11 @@ void StaticRecompCore::OnICacheInvalidate(u32 address, u32 length)
   if (m_module_active && m_module &&
       m_module->abi_version >= STATICRECOMP_ABI_VERSION_V4)
   {
-    RefreshRelBindings();
+    // OSLink/OSUnlink may invalidate many individual cache lines while one
+    // module transition is in progress, and savestate loading can invalidate
+    // nearly all guest RAM. Defer the full module-queue scan until the first
+    // subsequent REL dispatch so every invalidation burst costs one refresh.
+    m_rel_bindings_valid = false;
   }
 
   if (!m_module_active || length == 0)

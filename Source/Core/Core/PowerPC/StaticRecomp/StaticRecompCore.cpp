@@ -297,7 +297,7 @@ void StaticRecompCore::Shutdown()
   std::fprintf(stderr,
                "[staticrecomp] shutdown: native=%llu fallback=%llu native_exc=%llu hook_fb=%llu "
                "native_shims=%llu native_aliases=%llu native_rel=%llu "
-               "rel_links=%llu rel_unlinks=%llu "
+               "rel_links=%llu rel_unlinks=%llu rel_refreshes=%llu "
                "fallback_entries=%llu native_reentries=%llu first_fallback=0x%08X "
                "first_reentry=0x%08X smc_failed=%u verifications=%llu reverify_events=%llu "
                "bursts=%llu charged_cycles=%llu idle_skips=%llu traced_functions=%llu\n",
@@ -309,6 +309,7 @@ void StaticRecompCore::Shutdown()
                (unsigned long long)m_native_rel_dispatches,
                (unsigned long long)m_rel_link_generations,
                (unsigned long long)m_rel_unlink_generations,
+               (unsigned long long)m_rel_binding_refreshes,
                (unsigned long long)m_fallback_entries,
                (unsigned long long)m_native_reentries, m_first_fallback_pc,
                m_first_native_reentry_pc, m_failed_chunks,
@@ -342,6 +343,7 @@ void StaticRecompCore::Shutdown()
   m_block_cache.Shutdown();
   m_module = nullptr;
   m_rel_bindings.clear();
+  m_rel_bindings_valid = false;
   m_take_host_event = nullptr;
   if (m_library.IsOpen())
     m_library.Close();
@@ -432,6 +434,7 @@ void StaticRecompCore::LoadModule()
   m_lookup_exram_size = 0;
   m_chunk_lookup_table.clear();
   m_rel_bindings.clear();
+  m_rel_bindings_valid = false;
 
   // Generated native code currently treats guest instruction-cache
   // operations as coherence notifications rather than modelling the Gekko
@@ -460,5 +463,6 @@ void StaticRecompCore::ClearCache()
     return;
   std::fill(m_chunk_state.begin(), m_chunk_state.end(), u8{CHUNK_UNVERIFIED});
   m_failed_chunks = 0;
+  m_rel_bindings_valid = false;
   ++m_reverify_events;
 }

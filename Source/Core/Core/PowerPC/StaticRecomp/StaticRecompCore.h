@@ -278,6 +278,8 @@ private:
   // last hit short-circuits the chunk binary search on the hot path.
   mutable u32 m_last_chunk_index = 0;
   std::vector<RelBinding> m_rel_bindings;
+  bool m_rel_bindings_valid = false;
+  u64 m_rel_binding_refreshes = 0;
 
   bool m_opcode_fuzz_ran = false;
   u32 m_idle_pc = 0;
