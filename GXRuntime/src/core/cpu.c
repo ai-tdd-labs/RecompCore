@@ -31,6 +31,7 @@ __attribute__((visibility("default"))) void ppc_set_mem_write_journal(PPCMemWrit
 
 bool cpu_init(CPUState* cpu) {
     memset(cpu, 0, sizeof(*cpu));
+    cpu->host_fp_control_cache = ~0u;
 
     cpu->ram_size = GC_MAIN_RAM_SIZE;
     cpu->ram = (u8*)calloc(1, cpu->ram_size);
@@ -64,6 +65,7 @@ void cpu_reset(CPUState* cpu) {
     u32 exram_size = cpu->exram_size;
 
     memset(cpu, 0, sizeof(*cpu));
+    cpu->host_fp_control_cache = ~0u;
     cpu->ram = ram;
     cpu->ram_size = ram_size;
     cpu->external_read = external_read;
@@ -191,6 +193,14 @@ static u32 psq_type_size(u8 type) {
     }
 }
 
+static f32 psq_scale_factor(s32 exponent) {
+    /* GQR scales are limited to [-32, 31], so every factor is a normal,
+     * exactly representable f32 power of two. Building its IEEE exponent is
+     * equivalent to Dolphin's quantize/dequantize tables and avoids a host
+     * libm ldexp call in every quantized lane. */
+    return f32_value((u32)(exponent + 127) << 23);
+}
+
 /* Quantized load/store semantics mirror Dolphin's interpreter (the chassis
  * lockstep oracle) exactly:
  *  - psq_l/psq_st (non-indexed) require only HID2.LSQE; the indexed forms
@@ -202,9 +212,7 @@ static u32 psq_type_size(u8 type) {
  *    power-of-two scale, clamp in f32, truncate. NaN quantizes to 0
  *    (matching SType(NaN-after-clamp) in release Dolphin on arm64). */
 static f64 psq_dequant(f64 value, s32 scale) {
-    if (scale == 0)
-        return (f64)(f32)value;
-    return (f64)(f32)ldexp(value, -scale);
+    return (f64)((f32)value * psq_scale_factor(-scale));
 }
 
 static f64 psq_load_value(CPUState* cpu, u32 ea, u8 type, s32 scale) {
@@ -225,7 +233,7 @@ static f64 psq_load_value(CPUState* cpu, u32 ea, u8 type, s32 scale) {
 }
 
 static s64 psq_quantize_int(f64 value, s64 min_value, s64 max_value, s32 scale) {
-    f32 conv = (f32)value * ldexpf(1.0f, scale);
+    f32 conv = (f32)value * psq_scale_factor(scale);
     if (isnan(conv))
         return 0;
     if (conv <= (f32)min_value)

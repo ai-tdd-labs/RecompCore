@@ -270,6 +270,11 @@ void StaticRecompCore::Run()
       {
         const TimePoint native_started = measure_native_wall ? Clock::now() : TimePoint{};
         SyncIn();
+        // Host code between native bursts may use its own FP mode. Invalidate
+        // the generated helpers' cache so the first FP instruction re-arms
+        // GameCube FPSCR.RN/NI, while later instructions in this burst avoid
+        // duplicate ARM FPCR reads and writes.
+        m_guest.host_fp_control_cache = ~0u;
         ++m_bursts;
         do
         {
@@ -280,6 +285,16 @@ void StaticRecompCore::Run()
           {
             m_lockstep_verifier->Prepare(m_guest);
           }
+
+          // Generated local backedges may remain inside their native chunk
+          // until this exact Dolphin timing-slice budget is consumed. This
+          // removes dispatcher traffic from tight guest polling loops without
+          // postponing CoreTiming's next scheduled event.
+          const bool at_configured_idle_loop = m_idle_pc != 0 && m_guest.pc == m_idle_pc;
+          m_guest.dispatch_cycle_budget =
+              (trace_function_entries || lockstep_enabled || at_configured_idle_loop) ?
+                  0 :
+                  std::max<s64>(1, ppc.downcount);
 
           // The chassis lookup already resolved and SMC-verified this chunk.
           // Enter it directly instead of asking the module dispatcher to map
@@ -315,8 +330,12 @@ void StaticRecompCore::Run()
           m_charged_cycles += static_cast<u64>(charge > 0 ? charge : 1);
           m_guest.timebase += static_cast<u64>(charge > 0 ? charge : 1);
 
-          // Idle loop skipping for configured target loops (e.g. Wii Menu OSIdleThread)
-          if (m_guest.pc == m_idle_pc && m_idle_pc != 0)
+          // A generated request is a conservative compile-time match of
+          // Dolphin PPCAnalyzer::IsBusyWaitLoop. Explicit --idle-pc remains
+          // available for diagnosed loops outside that safe subset.
+          const bool generated_idle_loop = m_guest.idle_loop_requested != 0;
+          m_guest.idle_loop_requested = 0;
+          if (generated_idle_loop || (m_guest.pc == m_idle_pc && m_idle_pc != 0))
           {
             ++m_idle_skips;
             m_system.GetCoreTiming().Idle();

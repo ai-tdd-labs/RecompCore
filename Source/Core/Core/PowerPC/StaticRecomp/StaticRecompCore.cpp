@@ -343,6 +343,7 @@ void StaticRecompCore::Shutdown()
   m_block_cache.Shutdown();
   m_module = nullptr;
   m_rel_bindings.clear();
+  m_rel_sections.clear();
   m_rel_bindings_valid = false;
   m_take_host_event = nullptr;
   if (m_library.IsOpen())
@@ -434,6 +435,7 @@ void StaticRecompCore::LoadModule()
   m_lookup_exram_size = 0;
   m_chunk_lookup_table.clear();
   m_rel_bindings.clear();
+  m_rel_sections.clear();
   m_rel_bindings_valid = false;
 
   // Generated native code currently treats guest instruction-cache

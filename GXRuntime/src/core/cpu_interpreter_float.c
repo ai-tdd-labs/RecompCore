@@ -72,7 +72,19 @@ void ppc_fpscr_updated(CPUState* cpu) {
     cpu->fpscr = fpscr;
 }
 
-static void ppc_arm_host_fp_mode(CPUState* cpu) {
+#if defined(_MSC_VER)
+#define GX_FP_ALWAYS_INLINE static __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define GX_FP_ALWAYS_INLINE static inline __attribute__((always_inline))
+#else
+#define GX_FP_ALWAYS_INLINE static inline
+#endif
+
+GX_FP_ALWAYS_INLINE void ppc_arm_host_fp_mode(CPUState* cpu) {
+    const u32 control = cpu->fpscr & (FPSCR_NI_BIT | FPSCR_RN_MASK);
+    if (cpu->host_fp_control_cache == control)
+        return;
+
 #if defined(__aarch64__)
     static const u64 rmode_table[4] = {
         0ull << 22, /* nearest */
@@ -108,6 +120,7 @@ static void ppc_arm_host_fp_mode(CPUState* cpu) {
 #else
     (void)cpu;
 #endif
+    cpu->host_fp_control_cache = control;
 }
 
 void ppc_fpscr_control_updated(CPUState* cpu) {
@@ -346,7 +359,7 @@ f64 make_quiet(f64 value) {
     return f64_value(f64_bits(value) | 0x0008000000000000ull);
 }
 
-f32 force_single(const CPUState* cpu, f64 value) {
+GX_FP_ALWAYS_INLINE f32 force_single(const CPUState* cpu, f64 value) {
     ppc_arm_host_fp_mode((CPUState*)cpu);
     if (cpu->fpscr & FPSCR_NI_BIT) {
         u64 no_sign = f64_bits(value) & 0x7FFFFFFFFFFFFFFFull;
@@ -358,7 +371,7 @@ f32 force_single(const CPUState* cpu, f64 value) {
     return (f32)value;
 }
 
-f64 force_double(const CPUState* cpu, f64 d) {
+GX_FP_ALWAYS_INLINE f64 force_double(const CPUState* cpu, f64 d) {
     ppc_arm_host_fp_mode((CPUState*)cpu);
     return d;
 }
@@ -381,7 +394,7 @@ f64 force_25bit_c(f64 d) {
     return f64_value(integral);
 }
 
-FPRes ni_add(CPUState* cpu, f64 a, f64 b) {
+GX_FP_ALWAYS_INLINE FPRes ni_add(CPUState* cpu, f64 a, f64 b) {
     ppc_arm_host_fp_mode(cpu);
     FPRes result = {a + b, 0};
 
@@ -404,7 +417,7 @@ FPRes ni_add(CPUState* cpu, f64 a, f64 b) {
     return result;
 }
 
-FPRes ni_sub(CPUState* cpu, f64 a, f64 b) {
+GX_FP_ALWAYS_INLINE FPRes ni_sub(CPUState* cpu, f64 a, f64 b) {
     ppc_arm_host_fp_mode(cpu);
     FPRes result = {a - b, 0};
 
@@ -427,7 +440,7 @@ FPRes ni_sub(CPUState* cpu, f64 a, f64 b) {
     return result;
 }
 
-FPRes ni_mul(CPUState* cpu, f64 a, f64 b) {
+GX_FP_ALWAYS_INLINE FPRes ni_mul(CPUState* cpu, f64 a, f64 b) {
     ppc_arm_host_fp_mode(cpu);
     FPRes result = {a * b, 0};
 
@@ -448,7 +461,7 @@ FPRes ni_mul(CPUState* cpu, f64 a, f64 b) {
     return result;
 }
 
-FPRes ni_div(CPUState* cpu, f64 a, f64 b) {
+GX_FP_ALWAYS_INLINE FPRes ni_div(CPUState* cpu, f64 a, f64 b) {
     ppc_arm_host_fp_mode(cpu);
     FPRes result = {a / b, 0};
 
@@ -480,7 +493,8 @@ FPRes ni_div(CPUState* cpu, f64 a, f64 b) {
     return result;
 }
 
-FPRes ni_madd_msub(CPUState* cpu, f64 a, f64 c, f64 b, bool sub, bool single) {
+GX_FP_ALWAYS_INLINE FPRes ni_madd_msub(CPUState* cpu, f64 a, f64 c, f64 b, bool sub,
+                                       bool single) {
     ppc_arm_host_fp_mode(cpu);
     FPRes result = {0.0, 0};
 
@@ -528,6 +542,8 @@ FPRes ni_madd_msub(CPUState* cpu, f64 a, f64 c, f64 b, bool sub, bool single) {
         clear_fifr(cpu);
     return result;
 }
+
+#undef GX_FP_ALWAYS_INLINE
 
 bool fp_invalid_gated(const CPUState* cpu, const FPRes* res) {
     return (cpu->fpscr & FPSCR_VE_BIT) != 0 && (res->exception & FPSCR_VX_ANY_MASK) != 0;

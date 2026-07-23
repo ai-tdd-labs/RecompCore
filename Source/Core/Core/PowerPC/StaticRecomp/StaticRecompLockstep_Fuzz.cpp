@@ -245,6 +245,7 @@ void FillState(CPUState* guest, FuzzRandom& random, u32 seed_index)
   guest->reserve_addr = 0;
   guest->reserve_valid = false;
   guest->downcount = 0;
+  guest->host_fp_control_cache = ~0u;
 }
 
 void FillScratch(CPUState* guest, FuzzRandom& random)

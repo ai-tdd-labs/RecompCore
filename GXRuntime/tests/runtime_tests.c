@@ -27,7 +27,7 @@
 #include <stdio.h>
 #include <string.h>
 
-_Static_assert(GXRUNTIME_CPU_ABI_VERSION == 2u,
+_Static_assert(GXRUNTIME_CPU_ABI_VERSION == 5u,
                "update runtime ABI tests when the CPU ABI changes");
 _Static_assert(GXRUNTIME_CPU_ABI_DOLRECOMP_PREFIX == 1u,
                "GXRuntime generated-code prefix must stay explicit");
@@ -46,9 +46,23 @@ _Static_assert(offsetof(CPUState, ram) > offsetof(CPUState, external_user_data),
 _Static_assert(offsetof(CPUState, external_pointer) > offsetof(CPUState, ram_size),
                "GXRuntime external_pointer must remain a tail extension");
 _Static_assert(offsetof(CPUState, downcount) > offsetof(CPUState, external_pointer),
-               "ABI v2 downcount must remain the tail field");
+               "ABI v2 downcount must remain after external_pointer");
 _Static_assert(sizeof(((CPUState*)0)->downcount) == 8u,
                "downcount is s64 so unconsumed charges cannot wrap");
+_Static_assert(offsetof(CPUState, dispatch_cycle_budget) > offsetof(CPUState, exram_size),
+               "ABI v3 dispatch budget must remain a tail extension");
+_Static_assert(sizeof(((CPUState*)0)->dispatch_cycle_budget) == 8u,
+               "dispatch cycle budget is s64 to match downcount");
+_Static_assert(offsetof(CPUState, idle_loop_requested) >
+                   offsetof(CPUState, dispatch_cycle_budget),
+               "ABI v4 idle request must remain a tail extension");
+_Static_assert(sizeof(((CPUState*)0)->idle_loop_requested) == 4u,
+               "idle request must remain a fixed-width flag");
+_Static_assert(offsetof(CPUState, host_fp_control_cache) >
+                   offsetof(CPUState, idle_loop_requested),
+               "ABI v5 host FP control cache must remain a tail extension");
+_Static_assert(sizeof(((CPUState*)0)->host_fp_control_cache) == 4u,
+               "host FP control cache must remain a fixed-width value");
 _Static_assert(sizeof(((CPUState*)0)->gpr) / sizeof(((CPUState*)0)->gpr[0]) == 32u,
                "generated code requires 32 GPRs");
 _Static_assert(sizeof(((CPUState*)0)->fpr) / sizeof(((CPUState*)0)->fpr[0]) == 32u,

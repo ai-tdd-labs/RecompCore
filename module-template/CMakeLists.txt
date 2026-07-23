@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(recompcore_module C)
 
+# Generated sources can live below a deeply nested per-game cache.  Ask CMake
+# to hash long object paths so Clang can atomically rename its temporary object
+# files on hosts with stricter path handling (notably macOS).
+set(CMAKE_OBJECT_PATH_MAX 256)
+
 # Per-game native module for RecompCore: generated chunks + DolRecomp CPU
 # runtime + ABI export glue, no other host dependencies.
 #
@@ -14,6 +19,8 @@ option(MODERNGEKKO_ENABLE_LTO "Use link-time optimization for release modules" O
 option(MODERNGEKKO_FAST_BUILD "Prefer fast compilation over generated-code optimization" OFF)
 set(MODERNGEKKO_OPTIMIZATION_LEVEL "" CACHE STRING
     "Generated-code optimization level (0, 1, or 2)")
+set(MODERNGEKKO_HOT_DOL_CHUNKS "" CACHE STRING
+    "Semicolon-separated DOL chunk basenames to compile at -O2")
 if(MODERNGEKKO_OPTIMIZATION_LEVEL STREQUAL "")
   if(MODERNGEKKO_FAST_BUILD)
     set(MODERNGEKKO_OPTIMIZATION_LEVEL 0)
@@ -61,6 +68,17 @@ add_custom_command(
 file(GLOB CHUNK_SOURCES "${GENERATED_DIR}/chunks/*.c")
 file(GLOB_RECURSE REL_CHUNK_SOURCES
      CONFIGURE_DEPENDS "${GENERATED_DIR}/rels/*/chunks/*.c")
+foreach(HOT_CHUNK IN LISTS MODERNGEKKO_HOT_DOL_CHUNKS)
+  set(HOT_CHUNK_SOURCE "${GENERATED_DIR}/chunks/${HOT_CHUNK}")
+  if(NOT HOT_CHUNK_SOURCE IN_LIST CHUNK_SOURCES)
+    message(FATAL_ERROR "Requested hot DOL chunk does not exist: ${HOT_CHUNK}")
+  endif()
+  if(MSVC)
+    set_property(SOURCE "${HOT_CHUNK_SOURCE}" APPEND PROPERTY COMPILE_OPTIONS "/O2")
+  else()
+    set_property(SOURCE "${HOT_CHUNK_SOURCE}" APPEND PROPERTY COMPILE_OPTIONS "-O2")
+  endif()
+endforeach()
 set(REL_MODULE_TABLES "${CMAKE_CURRENT_BINARY_DIR}/rel_module_tables.inc")
 add_custom_command(
   OUTPUT "${REL_MODULE_TABLES}"

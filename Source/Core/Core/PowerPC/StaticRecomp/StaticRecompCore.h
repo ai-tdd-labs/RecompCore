@@ -169,6 +169,16 @@ private:
     u64 generation = 0;
   };
 
+  struct RelSectionBinding
+  {
+    const StaticRecompRelModuleDesc* module = nullptr;
+    const StaticRecompRelExecutableSection* section = nullptr;
+    u32 actual_start = 0;
+    u32 actual_end = 0;
+    intptr_t section_delta = 0;
+    u64 generation = 0;
+  };
+
   bool RefreshRelBindings();
   bool LookupRelChunk(u32 address, RelChunkDispatch* dispatch) const;
   const StaticRecompRelModuleDesc* FindRelModule(u32 module_id) const;
@@ -278,6 +288,7 @@ private:
   // last hit short-circuits the chunk binary search on the hot path.
   mutable u32 m_last_chunk_index = 0;
   std::vector<RelBinding> m_rel_bindings;
+  std::vector<RelSectionBinding> m_rel_sections;
   bool m_rel_bindings_valid = false;
   u64 m_rel_binding_refreshes = 0;
 

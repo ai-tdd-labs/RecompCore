@@ -66,20 +66,28 @@ void StaticRecompCore::HookExternalWrite(CPUState* cpu, u32 ea, u64 value, u8 si
     switch (size)
     {
     case 1:
-      gpfifo.Write8(static_cast<u8>(value));
+      gpfifo.FastWrite8(static_cast<u8>(value));
+      gpfifo.FastCheckGatherPipe();
       return;
     case 2:
-      gpfifo.Write16(static_cast<u16>(value));
+      gpfifo.FastWrite16(static_cast<u16>(value));
+      gpfifo.FastCheckGatherPipe();
       return;
     case 4:
-      gpfifo.Write32(static_cast<u32>(value));
+      gpfifo.FastWrite32(static_cast<u32>(value));
+      gpfifo.FastCheckGatherPipe();
+      return;
+    case 8:
+      gpfifo.FastWrite64(value);
+      gpfifo.FastCheckGatherPipe();
       return;
     default:
       for (u32 i = size * 8u; i > 0;)
       {
         i -= 8;
-        gpfifo.Write8(static_cast<u8>(value >> i));
+        gpfifo.FastWrite8(static_cast<u8>(value >> i));
       }
+      gpfifo.FastCheckGatherPipe();
       return;
     }
   }

@@ -72,17 +72,10 @@ bool is_snan(f64 value);
 u32 classify_f64(f64 value);
 u32 classify_f32(f32 value);
 void set_fprf(CPUState* cpu, u32 value);
-f32 force_single(const CPUState* cpu, f64 value);
-f64 force_double(const CPUState* cpu, f64 d);
 f64 force_25bit_c(f64 d);
 f64 make_quiet(f64 value);
 unsigned leading_zeroes_u64(u64 value);
 
-FPRes ni_add(CPUState* cpu, f64 a, f64 b);
-FPRes ni_sub(CPUState* cpu, f64 a, f64 b);
-FPRes ni_mul(CPUState* cpu, f64 a, f64 b);
-FPRes ni_div(CPUState* cpu, f64 a, f64 b);
-FPRes ni_madd_msub(CPUState* cpu, f64 a, f64 c, f64 b, bool sub, bool single);
 bool fp_invalid_gated(const CPUState* cpu, const FPRes* res);
 void fp_write_single(CPUState* cpu, u8 d, f32 rounded);
 void fp_write_double(CPUState* cpu, u8 d, f64 value);

@@ -6,8 +6,8 @@
 // can include it directly.
 //
 // The guest CPU state layout is DolRecomp's CPUState, vendored verbatim under
-// dolrecomp/ (provenance: GXRuntime include/core/cpu.h, CPU ABI v2 with the
-// tail `downcount` cycle-charge accumulator; originally @ 9a40e03). Both sides
+// dolrecomp/ (provenance: GXRuntime include/core/cpu.h, CPU ABI v3 with the
+// `downcount` cycle-charge accumulator and tail dispatch-cycle budget). Both sides
 // may alternatively define CPUState by including GXRuntime's original header;
 // the shared DOLRECOMP_CPU_H include guard makes that safe. Layout drift is
 // guarded at load time via cpu_abi_version + cpu_state_size.

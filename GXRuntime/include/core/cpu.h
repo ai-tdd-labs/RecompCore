@@ -21,13 +21,24 @@
 //   used as a fast path for host-backed external memory such as locked cache.
 // - Do not insert fields into the mirrored prefix without coordinating a
 //   generated-code ABI bump with DolRecomp.
-// - ABI v2 adds `downcount` at the tail: a guest-cycle charge accumulator.
+// - ABI v2 adds `downcount`: a guest-cycle charge accumulator.
 //   Generated code subtracts each basic block's Gekko cycle cost (mirroring
 //   Dolphin's PPCTables costs) at block entry; the embedding environment
 //   consumes and resets it (Dolphin chassis: per-dispatch flush into
 //   ppc_state.downcount). Hosts that do not meter guest time may ignore it
 //   (s64: it cannot wrap in any realistic session).
-#define GXRUNTIME_CPU_ABI_VERSION 2u
+// - ABI v3 adds `dispatch_cycle_budget` at the tail. Embedders may set it to
+//   the remaining guest cycles in the current timing slice so generated local
+//   backedges can stay inside one native chunk without delaying CoreTiming.
+// - ABI v4 adds `idle_loop_requested` at the tail. A conservative generated
+//   busy-loop detector sets it only when a taken polling-loop backedge matches
+//   Dolphin's safe idle-loop rules; the embedding environment may then advance
+//   directly to its next scheduled hardware event.
+// - ABI v5 adds `host_fp_control_cache` at the tail. The embedding environment
+//   invalidates it once per native burst; FP helpers then avoid repeatedly
+//   reading and writing the host FP control register while FPSCR.RN/NI is
+//   unchanged inside that burst.
+#define GXRUNTIME_CPU_ABI_VERSION 5u
 #define GXRUNTIME_CPU_ABI_DOLRECOMP_PREFIX 1u
 #define GXRUNTIME_CPU_ABI_EXTERNAL_POINTER_EXTENSION 1u
 
@@ -142,6 +153,9 @@ struct CPUState {
     s64 downcount;
     u8* exram;
     u32 exram_size;
+    s64 dispatch_cycle_budget;
+    u32 idle_loop_requested;
+    u32 host_fp_control_cache;
 };
 
 #include <stdio.h>

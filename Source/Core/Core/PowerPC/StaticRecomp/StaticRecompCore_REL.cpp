@@ -42,6 +42,7 @@ bool StaticRecompCore::RefreshRelBindings()
   {
     m_rel_unlink_generations += m_rel_bindings.size();
     m_rel_bindings.clear();
+    m_rel_sections.clear();
     m_rel_bindings_valid = true;
     return true;
   }
@@ -158,7 +159,38 @@ bool StaticRecompCore::RefreshRelBindings()
                    static_cast<unsigned long long>(old.generation));
     }
   }
+  std::vector<RelSectionBinding> next_sections;
+  for (const RelBinding& binding : next)
+  {
+    for (u32 section_index = 0;
+         section_index < binding.module->num_executable_sections; ++section_index)
+    {
+      const auto& section = binding.module->executable_sections[section_index];
+      const u32 actual_start = binding.section_bases[section.section_index] + section.offset;
+      next_sections.push_back({
+          .module = binding.module,
+          .section = &section,
+          .actual_start = actual_start,
+          .actual_end = actual_start + section.size,
+          .section_delta =
+              static_cast<intptr_t>(static_cast<s64>(section.canonical_start) -
+                                    static_cast<s64>(actual_start)),
+          .generation = binding.generation,
+      });
+    }
+  }
+  std::sort(next_sections.begin(), next_sections.end(),
+            [](const RelSectionBinding& a, const RelSectionBinding& b) {
+              return a.actual_start < b.actual_start;
+            });
+  for (size_t index = 1; index < next_sections.size(); ++index)
+  {
+    if (next_sections[index - 1].actual_end > next_sections[index].actual_start)
+      return false;
+  }
+
   m_rel_bindings = std::move(next);
+  m_rel_sections = std::move(next_sections);
   m_rel_bindings_valid = true;
   return true;
 }
@@ -168,50 +200,40 @@ bool StaticRecompCore::LookupRelChunk(u32 address, RelChunkDispatch* dispatch) c
   if (!dispatch)
     return false;
 
-  for (const RelBinding& binding : m_rel_bindings)
+  const auto after = std::upper_bound(
+      m_rel_sections.begin(), m_rel_sections.end(), address,
+      [](u32 pc, const RelSectionBinding& section) { return pc < section.actual_start; });
+  if (after == m_rel_sections.begin())
+    return false;
+
+  const RelSectionBinding& binding = *std::prev(after);
+  if (address >= binding.actual_end)
+    return false;
+
+  const auto& section = *binding.section;
+  const u32 canonical_pc =
+      static_cast<u32>(static_cast<intptr_t>(address) + binding.section_delta);
+  u32 lo = 0;
+  u32 hi = section.num_chunk_ranges;
+  while (lo < hi)
   {
-    for (u32 section_index = 0;
-         section_index < binding.module->num_executable_sections; ++section_index)
-    {
-      const auto& section = binding.module->executable_sections[section_index];
-      if (section.section_index >= binding.section_bases.size())
-        continue;
-      const u32 section_base = binding.section_bases[section.section_index];
-      const u64 actual_start = static_cast<u64>(section_base) + section.offset;
-      const u64 actual_end = actual_start + section.size;
-      if (address < actual_start || address >= actual_end)
-        continue;
-
-      const intptr_t delta =
-          static_cast<intptr_t>(static_cast<s64>(section.canonical_start) -
-                                static_cast<s64>(actual_start));
-      const u32 canonical_pc =
-          static_cast<u32>(static_cast<intptr_t>(address) + delta);
-      u32 lo = 0;
-      u32 hi = section.num_chunk_ranges;
-      while (lo < hi)
-      {
-        const u32 mid = lo + (hi - lo) / 2;
-        if (section.chunk_ranges[mid].end <= canonical_pc)
-          lo = mid + 1;
-        else
-          hi = mid;
-      }
-      if (lo >= section.num_chunk_ranges ||
-          canonical_pc < section.chunk_ranges[lo].start ||
-          canonical_pc >= section.chunk_ranges[lo].end)
-      {
-        return false;
-      }
-
-      dispatch->function = section.chunk_functions[lo];
-      dispatch->canonical_pc = canonical_pc;
-      dispatch->section_delta = delta;
-      dispatch->module_id = binding.module->module_id;
-      dispatch->section_index = section.section_index;
-      dispatch->generation = binding.generation;
-      return dispatch->function != nullptr;
-    }
+    const u32 mid = lo + (hi - lo) / 2;
+    if (section.chunk_ranges[mid].end <= canonical_pc)
+      lo = mid + 1;
+    else
+      hi = mid;
   }
-  return false;
+  if (lo >= section.num_chunk_ranges || canonical_pc < section.chunk_ranges[lo].start ||
+      canonical_pc >= section.chunk_ranges[lo].end)
+  {
+    return false;
+  }
+
+  dispatch->function = section.chunk_functions[lo];
+  dispatch->canonical_pc = canonical_pc;
+  dispatch->section_delta = binding.section_delta;
+  dispatch->module_id = binding.module->module_id;
+  dispatch->section_index = section.section_index;
+  dispatch->generation = binding.generation;
+  return dispatch->function != nullptr;
 }
