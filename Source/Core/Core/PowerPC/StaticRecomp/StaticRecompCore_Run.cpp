@@ -238,7 +238,9 @@ void StaticRecompCore::Run()
     RelChunkDispatch rel_chunk{};
     bool native_is_rel = false;
     const auto resolve_native = [&](u32 address) {
-      native_chunk_index = DispatchableChunkAt(address);
+      native_chunk_index = FastDispatchableChunkAt(address);
+      if (native_chunk_index < 0)
+        native_chunk_index = DispatchableChunkAt(address);
       native_is_rel = false;
       if (native_chunk_index >= 0)
         return true;
