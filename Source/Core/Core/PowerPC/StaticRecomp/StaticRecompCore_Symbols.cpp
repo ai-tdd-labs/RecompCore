@@ -104,6 +104,9 @@ void StaticRecompCore::LoadFunctionSymbols()
   m_trace_all_functions = Config::Get(Config::MAIN_STATICRECOMP_TRACE_FUNCTIONS);
   m_trace_function = Config::Get(Config::MAIN_STATICRECOMP_TRACE_FUNCTION);
   m_function_profile_path = Config::Get(Config::MAIN_STATICRECOMP_FUNCTION_PROFILE);
+  m_function_profile_start_frame =
+      Config::Get(Config::MAIN_STATICRECOMP_FUNCTION_PROFILE_START_FRAME);
+  m_function_profile_end_frame = Config::Get(Config::MAIN_STATICRECOMP_FUNCTION_PROFILE_END_FRAME);
   if (!m_trace_all_functions && m_trace_function.empty() && m_function_profile_path.empty())
     return;
 
@@ -141,10 +144,13 @@ void StaticRecompCore::LoadFunctionSymbols()
   std::sort(m_function_symbol_addresses.begin(), m_function_symbol_addresses.end());
 
   std::fprintf(stderr,
-               "[staticrecomp:symbols] loaded=%zu map='%s' mode=%s filter='%s' profile='%s'\n",
+               "[staticrecomp:symbols] loaded=%zu map='%s' mode=%s filter='%s' profile='%s' "
+               "profile_frames=%llu-%llu\n",
                m_function_symbols.size(), path.c_str(),
                m_trace_all_functions ? "all" : "filtered", m_trace_function.c_str(),
-               m_function_profile_path.c_str());
+               m_function_profile_path.c_str(),
+               static_cast<unsigned long long>(m_function_profile_start_frame),
+               static_cast<unsigned long long>(m_function_profile_end_frame));
 }
 
 void StaticRecompCore::TraceFunctionEntry()
@@ -171,7 +177,7 @@ void StaticRecompCore::TraceFunctionEntry()
   staticrecomp_symbol_trace_probe(&m_guest, m_guest.pc, symbol->second.c_str());
 }
 
-void StaticRecompCore::SampleFunction(u32 address)
+void StaticRecompCore::SampleFunction(u32 address, u64 movie_frame)
 {
   // The profiler samples one finished native dispatch in 1,024. It therefore
   // ranks time hot spots without paying a symbol-map lookup on every dispatch.
@@ -180,6 +186,9 @@ void StaticRecompCore::SampleFunction(u32 address)
   if (next == m_function_symbol_addresses.begin())
     return;
   ++m_profiled_function_samples[*std::prev(next)];
+  if (m_profile_first_movie_frame == 0)
+    m_profile_first_movie_frame = movie_frame;
+  m_profile_last_movie_frame = movie_frame;
 }
 
 void StaticRecompCore::WriteFunctionProfile()
@@ -212,6 +221,10 @@ void StaticRecompCore::WriteFunctionProfile()
   output << "{\n  \"schema\": \"moderngekko.function-profile.v1\",\n"
          << "  \"native_dispatches\": " << m_native_dispatches << ",\n"
          << "  \"sample_period_dispatches\": 1024,\n"
+         << "  \"movie_frame_start\": " << m_function_profile_start_frame << ",\n"
+         << "  \"movie_frame_end\": " << m_function_profile_end_frame << ",\n"
+         << "  \"sampled_movie_frame_start\": " << m_profile_first_movie_frame << ",\n"
+         << "  \"sampled_movie_frame_end\": " << m_profile_last_movie_frame << ",\n"
          << "  \"function_samples\": " << total_samples << ",\n"
          << "  \"unique_functions\": " << samples.size() << ",\n"
          << "  \"functions\": [\n";

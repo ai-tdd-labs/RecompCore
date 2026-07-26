@@ -11,6 +11,7 @@
 #include "Core/HW/CPU.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/ConfigManager.h"
+#include "Core/Movie.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "VideoCommon/PerformanceMetrics.h"
@@ -313,7 +314,14 @@ void StaticRecompCore::Run()
           if (sample_native_pcs && (m_native_dispatches & 0x3FFu) == 0u)
             ++m_native_pc_samples[m_guest.pc];
           if (profile_functions && (m_native_dispatches & 0x3FFu) == 0u)
-            SampleFunction(m_guest.pc);
+          {
+            const u64 movie_frame = m_system.GetMovie().GetCurrentFrame();
+            if (movie_frame >= m_function_profile_start_frame &&
+                (m_function_profile_end_frame == 0 || movie_frame <= m_function_profile_end_frame))
+            {
+              SampleFunction(m_guest.pc, movie_frame);
+            }
+          }
 
           if (do_ls)
           {

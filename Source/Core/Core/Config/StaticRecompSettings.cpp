@@ -12,6 +12,10 @@ const Info<std::string> MAIN_STATICRECOMP_SYMBOL_MAP{
     {System::Main, "Core", "StaticRecompSymbolMap"}, ""};
 const Info<std::string> MAIN_STATICRECOMP_FUNCTION_PROFILE{
     {System::Main, "Core", "StaticRecompFunctionProfile"}, ""};
+const Info<u64> MAIN_STATICRECOMP_FUNCTION_PROFILE_START_FRAME{
+    {System::Main, "Core", "StaticRecompFunctionProfileStartFrame"}, 0};
+const Info<u64> MAIN_STATICRECOMP_FUNCTION_PROFILE_END_FRAME{
+    {System::Main, "Core", "StaticRecompFunctionProfileEndFrame"}, 0};
 const Info<bool> MAIN_STATICRECOMP_TRACE_FUNCTIONS{
     {System::Main, "Core", "StaticRecompTraceFunctions"}, false};
 const Info<std::string> MAIN_STATICRECOMP_TRACE_FUNCTION{

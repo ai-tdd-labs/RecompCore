@@ -146,7 +146,7 @@ private:
   void LoadModule();
   void LoadFunctionSymbols();
   void TraceFunctionEntry();
-  void SampleFunction(u32 address);
+  void SampleFunction(u32 address, u64 movie_frame);
   void WriteFunctionProfile();
   bool TryHandleNativeLowStub(u32 pc);
   bool TryHandleNativeOSExceptionVector(u32 pc);
@@ -272,6 +272,10 @@ private:
   std::vector<u32> m_function_symbol_addresses;
   std::unordered_map<u32, u64> m_profiled_function_samples;
   std::string m_function_profile_path;
+  u64 m_function_profile_start_frame = 0;
+  u64 m_function_profile_end_frame = 0;
+  u64 m_profile_first_movie_frame = 0;
+  u64 m_profile_last_movie_frame = 0;
   std::string m_trace_function;
   bool m_trace_all_functions = false;
   u64 m_traced_function_entries = 0;
