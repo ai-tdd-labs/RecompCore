@@ -146,6 +146,8 @@ private:
   void LoadModule();
   void LoadFunctionSymbols();
   void TraceFunctionEntry();
+  void SampleFunction(u32 address);
+  void WriteFunctionProfile();
   bool TryHandleNativeLowStub(u32 pc);
   bool TryHandleNativeOSExceptionVector(u32 pc);
   void ReportNativeFallbackViolation(const char* kind, u32 pc, u32 raw = 0);
@@ -267,6 +269,9 @@ private:
   u64 m_idle_skips = 0;      // configured guest idle-loop skips (diagnostic)
 
   std::unordered_map<u32, std::string> m_function_symbols;
+  std::vector<u32> m_function_symbol_addresses;
+  std::unordered_map<u32, u64> m_profiled_function_samples;
+  std::string m_function_profile_path;
   std::string m_trace_function;
   bool m_trace_all_functions = false;
   u64 m_traced_function_entries = 0;

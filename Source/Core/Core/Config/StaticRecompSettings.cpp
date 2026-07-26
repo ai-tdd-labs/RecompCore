@@ -10,6 +10,8 @@ const Info<bool> MAIN_STATICRECOMP_ALLOW_FALLBACK{
 const Info<u32> MAIN_STATICRECOMP_IDLE_PC{{System::Main, "Core", "StaticRecompIdlePC"}, 0};
 const Info<std::string> MAIN_STATICRECOMP_SYMBOL_MAP{
     {System::Main, "Core", "StaticRecompSymbolMap"}, ""};
+const Info<std::string> MAIN_STATICRECOMP_FUNCTION_PROFILE{
+    {System::Main, "Core", "StaticRecompFunctionProfile"}, ""};
 const Info<bool> MAIN_STATICRECOMP_TRACE_FUNCTIONS{
     {System::Main, "Core", "StaticRecompTraceFunctions"}, false};
 const Info<std::string> MAIN_STATICRECOMP_TRACE_FUNCTION{

@@ -294,6 +294,7 @@ void StaticRecompCore::ReportNativeFallbackViolation(const char* kind, u32 pc, u
 void StaticRecompCore::Shutdown()
 {
   g_static_recomp_core = nullptr;
+  WriteFunctionProfile();
   std::fprintf(stderr,
                "[staticrecomp] shutdown: native=%llu fallback=%llu native_exc=%llu hook_fb=%llu "
                "native_shims=%llu native_aliases=%llu native_rel=%llu "

@@ -3,10 +3,16 @@
 
 #include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <system_error>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "Common/Config/Config.h"
 #include "Core/Config/StaticRecompSettings.h"
@@ -53,13 +59,52 @@ bool NameMatches(std::string_view raw_name, std::string_view requested)
   return raw_name.size() > requested.size() + 2 && raw_name.starts_with(requested) &&
          raw_name.substr(requested.size(), 2) == "__";
 }
+
+void WriteJsonString(std::ostream& output, std::string_view value)
+{
+  output << '"';
+  for (const unsigned char character : value)
+  {
+    switch (character)
+    {
+    case '"':
+      output << "\\\"";
+      break;
+    case '\\':
+      output << "\\\\";
+      break;
+    case '\n':
+      output << "\\n";
+      break;
+    case '\r':
+      output << "\\r";
+      break;
+    case '\t':
+      output << "\\t";
+      break;
+    default:
+      if (character < 0x20)
+      {
+        constexpr char hex[] = "0123456789ABCDEF";
+        output << "\\u00" << hex[character >> 4] << hex[character & 0x0F];
+      }
+      else
+      {
+        output << static_cast<char>(character);
+      }
+      break;
+    }
+  }
+  output << '"';
+}
 }  // namespace
 
 void StaticRecompCore::LoadFunctionSymbols()
 {
   m_trace_all_functions = Config::Get(Config::MAIN_STATICRECOMP_TRACE_FUNCTIONS);
   m_trace_function = Config::Get(Config::MAIN_STATICRECOMP_TRACE_FUNCTION);
-  if (!m_trace_all_functions && m_trace_function.empty())
+  m_function_profile_path = Config::Get(Config::MAIN_STATICRECOMP_FUNCTION_PROFILE);
+  if (!m_trace_all_functions && m_trace_function.empty() && m_function_profile_path.empty())
     return;
 
   const std::string path = Config::Get(Config::MAIN_STATICRECOMP_SYMBOL_MAP);
@@ -90,13 +135,16 @@ void StaticRecompCore::LoadFunctionSymbols()
         std::from_chars(address_text.data(), address_text.data() + address_text.size(), address, 16);
     if (name.empty() || parsed.ec != std::errc{})
       continue;
-    m_function_symbols.try_emplace(address, name);
+    if (m_function_symbols.try_emplace(address, name).second)
+      m_function_symbol_addresses.push_back(address);
   }
+  std::sort(m_function_symbol_addresses.begin(), m_function_symbol_addresses.end());
 
   std::fprintf(stderr,
-               "[staticrecomp:symbols] loaded=%zu map='%s' mode=%s filter='%s'\n",
+               "[staticrecomp:symbols] loaded=%zu map='%s' mode=%s filter='%s' profile='%s'\n",
                m_function_symbols.size(), path.c_str(),
-               m_trace_all_functions ? "all" : "filtered", m_trace_function.c_str());
+               m_trace_all_functions ? "all" : "filtered", m_trace_function.c_str(),
+               m_function_profile_path.c_str());
 }
 
 void StaticRecompCore::TraceFunctionEntry()
@@ -121,4 +169,76 @@ void StaticRecompCore::TraceFunctionEntry()
                m_guest.lr, symbol->second.c_str(), m_guest.gpr[3], m_guest.gpr[4], m_guest.gpr[5],
                m_guest.gpr[6], m_guest.fpr[1], m_guest.fpr[2], m_guest.fpr[3], m_guest.fpr[4]);
   staticrecomp_symbol_trace_probe(&m_guest, m_guest.pc, symbol->second.c_str());
+}
+
+void StaticRecompCore::SampleFunction(u32 address)
+{
+  // The profiler samples one finished native dispatch in 1,024. It therefore
+  // ranks time hot spots without paying a symbol-map lookup on every dispatch.
+  const auto next = std::upper_bound(m_function_symbol_addresses.begin(),
+                                     m_function_symbol_addresses.end(), address);
+  if (next == m_function_symbol_addresses.begin())
+    return;
+  ++m_profiled_function_samples[*std::prev(next)];
+}
+
+void StaticRecompCore::WriteFunctionProfile()
+{
+  if (m_function_profile_path.empty())
+    return;
+
+  std::vector<std::pair<u32, u64>> samples(m_profiled_function_samples.begin(),
+                                            m_profiled_function_samples.end());
+  std::sort(samples.begin(), samples.end(), [](const auto& left, const auto& right) {
+    return left.second != right.second ? left.second > right.second : left.first < right.first;
+  });
+
+  const std::filesystem::path path(m_function_profile_path);
+  std::error_code error;
+  if (!path.parent_path().empty())
+    std::filesystem::create_directories(path.parent_path(), error);
+  std::ofstream output(path, std::ios::trunc);
+  if (!output)
+  {
+    std::fprintf(stderr, "[staticrecomp:function-profile] unable to write '%s'\n",
+                 m_function_profile_path.c_str());
+    return;
+  }
+
+  u64 total_samples = 0;
+  for (const auto& sample : samples)
+    total_samples += sample.second;
+
+  output << "{\n  \"schema\": \"moderngekko.function-profile.v1\",\n"
+         << "  \"native_dispatches\": " << m_native_dispatches << ",\n"
+         << "  \"sample_period_dispatches\": 1024,\n"
+         << "  \"function_samples\": " << total_samples << ",\n"
+         << "  \"unique_functions\": " << samples.size() << ",\n"
+         << "  \"functions\": [\n";
+  for (size_t index = 0; index < samples.size(); ++index)
+  {
+    const auto [address, count] = samples[index];
+    output << "    {\"address\": \"0x";
+    char address_text[9]{};
+    std::snprintf(address_text, sizeof(address_text), "%08X", address);
+    output << address_text << "\", \"name\": ";
+    WriteJsonString(output, m_function_symbols.at(address));
+    output << ", \"samples\": " << count << "}";
+    output << (index + 1 == samples.size() ? "\n" : ",\n");
+  }
+  output << "  ]\n}\n";
+  output.close();
+
+  std::fprintf(stderr,
+               "[staticrecomp:function-profile] wrote=%zu samples=%llu native=%llu path='%s'\n",
+               samples.size(), static_cast<unsigned long long>(total_samples),
+               static_cast<unsigned long long>(m_native_dispatches), m_function_profile_path.c_str());
+  std::fprintf(stderr, "[staticrecomp:function-profile] top:");
+  for (size_t index = 0; index < std::min<size_t>(8, samples.size()); ++index)
+  {
+    const auto [address, count] = samples[index];
+    std::fprintf(stderr, " %s@0x%08X=%llu", m_function_symbols.at(address).c_str(), address,
+                 static_cast<unsigned long long>(count));
+  }
+  std::fprintf(stderr, "\n");
 }

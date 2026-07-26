@@ -193,7 +193,8 @@ void StaticRecompCore::Run()
 
   // Oracle features are immutable for a run. Do not call their cold helpers
   // once per native dispatch when no trace or lockstep session was requested.
-  const bool trace_function_entries = !m_function_symbols.empty();
+  const bool trace_function_entries = m_trace_all_functions || !m_trace_function.empty();
+  const bool profile_functions = !m_function_profile_path.empty();
   const bool lockstep_enabled = m_lockstep_verifier->IsEnabled();
   const bool timeline_enabled = m_system.GetPerfMetrics().IsTimelineEnabled();
   // Exact native-wall timing brackets every native burst (roughly 1,400 per
@@ -311,6 +312,8 @@ void StaticRecompCore::Run()
           ++m_native_dispatches;
           if (sample_native_pcs && (m_native_dispatches & 0x3FFu) == 0u)
             ++m_native_pc_samples[m_guest.pc];
+          if (profile_functions && (m_native_dispatches & 0x3FFu) == 0u)
+            SampleFunction(m_guest.pc);
 
           if (do_ls)
           {
